@@ -108,7 +108,7 @@ test("聊天整理结果经过预览确认后保存，刷新、完成、编辑�
       const file = await download.path();
       expect(file).not.toBeNull();
       const backup = JSON.parse(await readFile(file!, "utf8")) as WorkspaceData & { format: string; version: number };
-      expect(backup).toMatchObject({ format: "life-workbench-backup", version: 1 });
+      expect(backup).toMatchObject({ format: "life-workbench-backup", version: 2 });
       expect(backup.tasks).toHaveLength(1);
       expect(backup.tasks[0].id).toBe(taskId);
       expect(backup.sources[0].text).toBe(sourceText);

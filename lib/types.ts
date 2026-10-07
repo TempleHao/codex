@@ -1,4 +1,4 @@
-export const AREAS = ["生活", "工作", "健康", "阅读", "出行", "思考", "其他"] as const;
+export const AREAS = ["生活", "衣着", "饮食", "居住", "出行", "影音", "阅读", "思考", "工作", "健康", "其他"] as const;
 export type Area = (typeof AREAS)[number];
 export type Priority = "normal" | "high";
 

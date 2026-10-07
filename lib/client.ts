@@ -1,5 +1,6 @@
 import { z } from "zod";
-import { backupSchema } from "./backup";
+import { backupSchema, legacyBackupSchema, MAX_BACKUP_BYTES } from "./backup";
+import { emptyLifeData, lifeDataSchema, mergeLifeBackups, type LifeData } from "./life";
 import type { SourceRecord, Task, WorkspaceData } from "./types";
 import { importBatchSchema, taskPatchSchema, validationErrorMessage } from "./validation";
 
@@ -10,8 +11,9 @@ const MAX_RECORDS = 5_000;
 
 const storedSchema = z.object({
   version: z.literal(1),
-  tasks: backupSchema.shape.tasks,
-  sources: backupSchema.shape.sources,
+  tasks: legacyBackupSchema.shape.tasks,
+  sources: legacyBackupSchema.shape.sources,
+  life: lifeDataSchema.default(emptyLifeData),
   batches: z.record(z.uuid(), z.object({ canonical: z.string(), sourceId: z.uuid() }).strict()),
 }).strict().superRefine((state, context) => {
   const sourceIds = new Set(state.sources.map(source => source.id));
@@ -30,7 +32,7 @@ type StoredState = z.infer<typeof storedSchema>;
 export type BrowserBackup = z.infer<typeof backupSchema>;
 
 function emptyState(): StoredState {
-  return { version: 1, tasks: [], sources: [], batches: {} };
+  return { version: 1, tasks: [], sources: [], batches: {}, life: emptyLifeData() };
 }
 
 function validate<Schema extends z.ZodType>(schema: Schema, value: unknown): z.output<Schema> {
@@ -97,6 +99,16 @@ export class BrowserStore {
 
   snapshot(): WorkspaceData { return snapshotOf(this.read()); }
 
+  getLife(): LifeData { return this.read().life; }
+
+  saveLife(input: unknown): LifeData {
+    const life = validate(lifeDataSchema, input);
+    const state = this.read();
+    state.life = life;
+    this.write(state);
+    return life;
+  }
+
   addBatch(input: unknown): WorkspaceData {
     const batch = validate(importBatchSchema, input);
     const state = this.read();
@@ -154,7 +166,8 @@ export class BrowserStore {
   }
 
   exportBackup(): BrowserBackup {
-    return { format: "life-workbench-backup", version: 1, exportedAt: new Date().toISOString(), ...this.snapshot() };
+    const state = this.read();
+    return { format: "life-workbench-backup", version: 2, exportedAt: new Date().toISOString(), ...snapshotOf(state), life: state.life };
   }
 
   restore(input: unknown): WorkspaceData {
@@ -172,6 +185,7 @@ export class BrowserStore {
       if (prior && !sameRecord(prior, task)) throw new Error("备份待办与现有待办冲突，未恢复任何内容。请保留两份备份后核对。");
       if (!prior) { state.tasks.push(task); taskById.set(task.id, task); }
     }
+    if (backup.version === 2) state.life = mergeLifeBackups(state.life, backup.life);
     // All validation, conflict checks and capacity checks finish before the single write.
     this.write(state);
     return snapshotOf(state);
@@ -198,9 +212,11 @@ export class BrowserStore {
     };
     let result: unknown;
     if (pathname === "/api/tasks" && method === "GET") result = this.snapshot();
+    else if (pathname === "/api/life" && method === "GET") result = this.getLife();
+    else if (pathname === "/api/life" && method === "PUT") result = this.saveLife(readBody(5_000_000));
     else if (pathname === "/api/tasks" && method === "POST") result = this.addBatch(readBody());
     else if (pathname === "/api/export" && method === "GET") result = this.exportBackup();
-    else if (pathname === "/api/restore" && method === "POST") result = this.restore(readBody(5_000_000));
+    else if (pathname === "/api/restore" && method === "POST") result = this.restore(readBody(MAX_BACKUP_BYTES));
     else if (pathname === "/api/workspace" && method === "DELETE") { this.clear(); result = { ok: true }; }
     else if (/^\/api\/tasks\/[^/]+$/.test(pathname) && (method === "PATCH" || method === "DELETE")) {
       const id = pathname.slice("/api/tasks/".length);

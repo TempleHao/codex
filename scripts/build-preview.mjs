@@ -17,9 +17,10 @@ try {
   for (const name of ["page.tsx", "layout.tsx", "globals.css", "icon.svg"]) {
     await cp(path.join(root, "app", name), path.join(work, "app", name));
   }
-  for (const name of ["types.ts", "dates.ts", "validation.ts", "import.ts", "client.ts", "backup.ts"]) {
+  for (const name of ["types.ts", "dates.ts", "validation.ts", "import.ts", "client.ts", "backup.ts", "life.ts", "reading.ts", "weread.ts", "weread-sync.ts"]) {
     await cp(path.join(root, "lib", name), path.join(work, "lib", name));
   }
+  await cp(path.join(root, "components"), path.join(work, "components"), { recursive: true });
   await cp(path.join(root, "public"), path.join(work, "public"), { recursive: true });
   for (const name of ["package.json", "tsconfig.json"]) await cp(path.join(root, name), path.join(work, name));
   await symlink(path.join(root, "node_modules"), path.join(work, "node_modules"), "dir");

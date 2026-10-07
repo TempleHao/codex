@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { BrowserStore, BROWSER_STORAGE_KEY } from "./client";
 import type { WorkspaceData } from "./types";
+import { emptyLifeData, type LifeData } from "./life";
 
 class FakeStorage implements Storage {
   private entries = new Map<string, string>();
@@ -34,6 +35,17 @@ function jsonOptions(body: unknown, method = "POST"): RequestInit {
   return { method, headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) };
 }
 
+function life(bookId = "book-1"): LifeData {
+  const data = emptyLifeData();
+  data.reading.books.push({ id: bookId, title: "生活里的阅读", author: "作者", kind: "ebook", status: "reading", progress: 25, secondsRead: 3_600, deepLink: `weread://book/${bookId}` });
+  data.reading.highlights.push({ id: `${bookId}-highlight`, bookId, text: "保留的划线原文", thought: "在阅读时写下的笔记", chapter: "第一章", createdAt: "2026-10-07T12:00:00.000Z" });
+  data.reading.stats = { totalSeconds: 3_600, readingDays: 1, dailySeconds: [{ date: "2026-10-07", seconds: 3_600 }], mode: "overall", period: null, preferredHours: [{ hour: 20, seconds: 3_600 }] };
+  data.reading.syncedAt = "2026-10-07T12:00:00.000Z";
+  data.reading.source = "weread";
+  data.thoughts.push({ id: crypto.randomUUID(), title: "读后的想法", body: " 原始思考\n可以实践的观察 ", createdAt: "2026-10-07T12:00:00.000Z", updatedAt: "2026-10-07T13:00:00.000Z", bookId, highlightId: `${bookId}-highlight`, sourceExcerpt: "保留的划线原文" });
+  return data;
+}
+
 afterEach(() => { vi.unstubAllEnvs(); vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 
 describe("浏览器独立存储", () => {
@@ -41,6 +53,7 @@ describe("浏览器独立存储", () => {
     const storage = new FakeStorage();
     const store = new BrowserStore(storage);
     expect(store.snapshot()).toEqual({ tasks: [], sources: [] });
+    expect(store.getLife()).toEqual(emptyLifeData());
     expect(storage.length).toBe(0);
     const input = batch(["买菜", "整理书桌"]);
     const saved = store.addBatch(input);
@@ -106,9 +119,9 @@ describe("浏览器独立存储", () => {
     first.addBatch(batch(["买菜"]));
     const backup = first.exportBackup();
     expect(backup.format).toBe("life-workbench-backup");
-    expect(backup.version).toBe(1);
+    expect(backup.version).toBe(2);
     expect(backup.exportedAt).toMatch(/T.*Z$/);
-    expect(Object.keys(backup).sort()).toEqual(["exportedAt", "format", "sources", "tasks", "version"]);
+    expect(Object.keys(backup).sort()).toEqual(["exportedAt", "format", "life", "sources", "tasks", "version"]);
     const second = new BrowserStore(new FakeStorage());
     second.addBatch(batch(["洗衣服"]));
     const merged = second.restore(backup);
@@ -233,6 +246,202 @@ describe("浏览器独立存储", () => {
   });
 });
 
+describe("浏览器阅读与思考存储", () => {
+  it("读取旧版存储时补充空阅读与思考，不写迁移数据，保存后保留任务与批次", () => {
+    const storage = new FakeStorage();
+    const store = new BrowserStore(storage);
+    const input = batch(["旧版待办"], "旧版保存的完整原文");
+    const tasks = store.addBatch(input);
+    const legacy = JSON.parse(storage.getItem(BROWSER_STORAGE_KEY)!);
+    delete legacy.life;
+    const raw = JSON.stringify(legacy);
+    storage.setItem(BROWSER_STORAGE_KEY, raw);
+    const writes = storage.writes;
+
+    const upgraded = new BrowserStore(storage);
+    expect(upgraded.snapshot()).toEqual(tasks);
+    expect(upgraded.getLife()).toEqual(emptyLifeData());
+    expect(upgraded.exportBackup()).toMatchObject({ version: 2, ...tasks, life: emptyLifeData() });
+    expect(upgraded.addBatch(input)).toEqual(tasks);
+    expect(storage.writes).toBe(writes);
+    expect(storage.getItem(BROWSER_STORAGE_KEY)).toBe(raw);
+
+    const saved = upgraded.saveLife(life());
+    expect(upgraded.snapshot()).toEqual(tasks);
+    expect(upgraded.addBatch(input)).toEqual(tasks);
+    expect(new BrowserStore(storage).getLife()).toEqual(saved);
+    expect(JSON.parse(storage.getItem(BROWSER_STORAGE_KEY)!)).toMatchObject({ version: 1, ...tasks, batches: legacy.batches, life: saved });
+    expect(BROWSER_STORAGE_KEY).toBe("life-workbench-preview-v1");
+  });
+
+  it("保存阅读与思考保留原任务，随后任务增删改仍保留阅读与思考", () => {
+    const storage = new FakeStorage();
+    const store = new BrowserStore(storage);
+    const tasks = store.addBatch(batch(["已有任务"]));
+    const saved = store.saveLife(life());
+    expect(store.snapshot()).toEqual(tasks);
+    const edited = store.update(tasks.tasks[0].id, { status: "done", title: "已修改任务" });
+    const additional = store.addBatch(batch(["新增任务"])).tasks.find(task => task.id !== edited!.id)!;
+    expect(store.remove(additional.id)).toBe(true);
+    expect(store.snapshot().tasks).toEqual([edited]);
+    expect(store.getLife()).toEqual(saved);
+    expect(new BrowserStore(storage).getLife()).toEqual(saved);
+  });
+
+  it("恢复 v1 备份保留现有阅读与思考，并合并旧版任务", () => {
+    const store = new BrowserStore(new FakeStorage());
+    const existing = store.addBatch(batch(["已有任务"]));
+    const saved = store.saveLife(life());
+    const legacyStore = new BrowserStore(new FakeStorage());
+    const incoming = legacyStore.addBatch(batch(["旧版备份任务"], "旧备份原文"));
+    const legacyBackup = { format: "life-workbench-backup", version: 1, exportedAt: "2026-10-07T12:00:00.000Z", ...incoming };
+    const restored = store.restore(legacyBackup);
+    expect(restored.tasks).toHaveLength(2);
+    expect(restored.tasks).toEqual(expect.arrayContaining([...existing.tasks, ...incoming.tasks]));
+    expect(restored.sources).toEqual(expect.arrayContaining([...existing.sources, ...incoming.sources]));
+    expect(store.getLife()).toEqual(saved);
+    expect(store.restore(legacyBackup)).toEqual(restored);
+    expect(store.getLife()).toEqual(saved);
+  });
+
+  it("v2 完整导出恢复保留阅读统计、划线、思考、原文与所有 ID，重复恢复幂等", () => {
+    const first = new BrowserStore(new FakeStorage());
+    const tasks = first.addBatch(batch(["待备份任务"], "原始聊天文本"));
+    first.update(tasks.tasks[0].id, { status: "done" });
+    const saved = first.saveLife(life());
+    const backup = first.exportBackup();
+    expect(backup).toMatchObject({ version: 2, life: saved, ...first.snapshot() });
+    expect(backup).not.toHaveProperty("batches");
+
+    const storage = new FakeStorage();
+    const second = new BrowserStore(storage);
+    expect(second.restore(backup)).toEqual(first.snapshot());
+    expect(second.getLife()).toEqual(saved);
+    const raw = storage.getItem(BROWSER_STORAGE_KEY);
+    expect(second.restore(backup)).toEqual(first.snapshot());
+    expect(second.getLife()).toEqual(saved);
+    expect(JSON.parse(storage.getItem(BROWSER_STORAGE_KEY)!)).toEqual(JSON.parse(raw!));
+    expect(new BrowserStore(storage).getLife()).toEqual(saved);
+  });
+
+  it("v2 增量恢复保留已有书籍、划线、思考与任务", () => {
+    const store = new BrowserStore(new FakeStorage());
+    const originalTasks = store.addBatch(batch(["原有任务"]));
+    const existing = store.saveLife(life("existing-book"));
+    const another = new BrowserStore(new FakeStorage());
+    const additionalTasks = another.addBatch(batch(["备份任务"]));
+    const incoming = another.saveLife(life("backup-book"));
+    const backup = another.exportBackup();
+    const restored = store.restore(backup);
+    expect(restored.tasks).toEqual(expect.arrayContaining([...originalTasks.tasks, ...additionalTasks.tasks]));
+    const merged = store.getLife();
+    expect(merged.reading.books).toEqual([...existing.reading.books, ...incoming.reading.books]);
+    expect(merged.reading.highlights).toEqual([...existing.reading.highlights, ...incoming.reading.highlights]);
+    expect(merged.thoughts).toEqual([...existing.thoughts, ...incoming.thoughts]);
+    expect(merged.reading.stats).toEqual(existing.reading.stats);
+    expect(store.restore(backup)).toEqual(restored);
+    expect(store.getLife()).toEqual(merged);
+  });
+
+  it.each(["book", "highlight", "thought", "stats"] as const)("阅读思考的 %s 冲突拒绝整份恢复，不写入任何新任务、原文或阅读记录", kind => {
+    const storage = new FakeStorage();
+    const store = new BrowserStore(storage);
+    const tasks = store.addBatch(batch(["现有任务"]));
+    const existing = store.saveLife(life());
+    const another = new BrowserStore(new FakeStorage());
+    another.addBatch(batch(["不能部分恢复的任务"], "不能部分恢复的原文"));
+    const incoming = structuredClone(existing);
+    incoming.reading.books.push({ id: "additional-book", title: "不能部分恢复的书", author: "", kind: "ebook", status: "wanted" });
+    incoming.thoughts.push({ ...incoming.thoughts[0], id: crypto.randomUUID(), title: "不能部分恢复的想法" });
+    if (kind === "book") incoming.reading.books[0].title = "冲突书名";
+    if (kind === "highlight") incoming.reading.highlights[0].text = "冲突划线";
+    if (kind === "thought") incoming.thoughts[0].body = "冲突思考";
+    if (kind === "stats") incoming.reading.stats!.totalSeconds = 7_200;
+    const backup = { ...another.exportBackup(), version: 2, life: incoming };
+    const raw = storage.getItem(BROWSER_STORAGE_KEY);
+    const writes = storage.writes;
+    expect(() => store.restore(backup)).toThrow("冲突");
+    expect(storage.writes).toBe(writes);
+    expect(storage.getItem(BROWSER_STORAGE_KEY)).toBe(raw);
+    expect(store.snapshot()).toEqual(tasks);
+    expect(store.getLife()).toEqual(existing);
+  });
+
+  it("任务冲突也拒绝同份备份中的新增阅读与思考", () => {
+    const storage = new FakeStorage();
+    const store = new BrowserStore(storage);
+    const tasks = store.addBatch(batch(["原有任务"]));
+    const existing = store.saveLife(life("existing-book"));
+    const backup = { ...store.exportBackup(), version: 2, tasks: [{ ...tasks.tasks[0], title: "冲突标题" }], life: life("backup-book") };
+    const raw = storage.getItem(BROWSER_STORAGE_KEY);
+    expect(() => store.restore(backup)).toThrow("待办冲突");
+    expect(storage.getItem(BROWSER_STORAGE_KEY)).toBe(raw);
+    expect(store.snapshot()).toEqual(tasks);
+    expect(store.getLife()).toEqual(existing);
+  });
+
+  it.each(["life", "reading", "thought", "backup"] as const)("拒绝 %s 中的凭证额外字段，保留原数据且错误不反映字段值", location => {
+    const storage = new FakeStorage();
+    const store = new BrowserStore(storage);
+    store.addBatch(batch(["已有任务"]));
+    const existing = store.saveLife(life());
+    const credentialMarker = "fake-sensitive-value-for-rejection-test";
+    let incoming: unknown = life("backup-book");
+    if (location === "life") incoming = { ...incoming as LifeData, token: credentialMarker };
+    if (location === "reading") incoming = { ...incoming as LifeData, reading: { ...(incoming as LifeData).reading, cookie: credentialMarker } };
+    if (location === "thought") incoming = { ...incoming as LifeData, thoughts: [{ ...(incoming as LifeData).thoughts[0], wereadToken: credentialMarker }] };
+    const backup = { ...store.exportBackup(), version: 2, life: incoming, ...(location === "backup" ? { authorization: credentialMarker } : {}) };
+    const raw = storage.getItem(BROWSER_STORAGE_KEY);
+    const writes = storage.writes;
+    if (location !== "backup") expect(() => store.saveLife(incoming)).toThrow("不支持的字段");
+    try { store.restore(backup); throw new Error("expected restore to reject"); }
+    catch (error) {
+      expect(String(error)).toContain("不支持的字段");
+      expect(String(error)).not.toContain(credentialMarker);
+    }
+    expect(storage.writes).toBe(writes);
+    expect(storage.getItem(BROWSER_STORAGE_KEY)).toBe(raw);
+    expect(storage.getItem(BROWSER_STORAGE_KEY)).not.toContain(credentialMarker);
+    expect(store.getLife()).toEqual(existing);
+  });
+
+  it("阅读思考保存或整份备份恢复遇到配额失败时不假成功，任务和生活数据均不改变", () => {
+    const storage = new FakeStorage();
+    const store = new BrowserStore(storage);
+    const tasks = store.addBatch(batch(["原有任务"]));
+    const existing = store.saveLife(life("existing-book"));
+    const another = new BrowserStore(new FakeStorage());
+    another.addBatch(batch(["未能保存的任务"]));
+    const incoming = another.saveLife(life("backup-book"));
+    const raw = storage.getItem(BROWSER_STORAGE_KEY);
+    const writes = storage.writes;
+    storage.failWrite = "quota";
+    expect(() => store.saveLife(incoming)).toThrow("内容没有保存");
+    expect(() => store.restore(another.exportBackup())).toThrow("空间不足");
+    expect(storage.writes).toBe(writes);
+    expect(storage.getItem(BROWSER_STORAGE_KEY)).toBe(raw);
+    expect(store.snapshot()).toEqual(tasks);
+    expect(store.getLife()).toEqual(existing);
+    storage.failWrite = "security";
+    expect(() => store.saveLife(incoming)).toThrow("禁止保存");
+    expect(store.getLife()).toEqual(existing);
+  });
+
+  it("生活 API 适配支持 GET 与 PUT，保存严格校验并拒绝超大请求", () => {
+    const storage = new FakeStorage();
+    const store = new BrowserStore(storage);
+    expect(store.handleRequest("/api/life")).toEqual(emptyLifeData());
+    expect(storage.writes).toBe(0);
+    const saved = life();
+    expect(store.handleRequest("/api/life", jsonOptions(saved, "PUT"))).toEqual(saved);
+    expect(store.handleRequest("/api/life")).toEqual(saved);
+    const raw = storage.getItem(BROWSER_STORAGE_KEY);
+    expect(() => store.handleRequest("/api/life", jsonOptions({ ...saved, secret: "rejected-value" }, "PUT"))).toThrow("不支持的字段");
+    expect(() => store.handleRequest("/api/life", { method: "PUT", headers: { "Content-Type": "application/json" }, body: " ".repeat(5_000_001) })).toThrow("内容太大");
+    expect(storage.getItem(BROWSER_STORAGE_KEY)).toBe(raw);
+  });
+});
+
 describe("静态站点 request", () => {
   it("本地模式的读写、导出和恢复不向后台发请求", async () => {
     const storage = new FakeStorage();
@@ -245,11 +454,16 @@ describe("静态站点 request", () => {
     expect(IS_STATIC_PREVIEW).toBe(true);
     const saved = await request<WorkspaceData>("/api/tasks", jsonOptions(batch()));
     expect(saved.tasks).toHaveLength(1);
+    const readingAndThoughts = life();
+    expect(await request("/api/life", jsonOptions(readingAndThoughts, "PUT"))).toEqual(readingAndThoughts);
+    expect(await request("/api/life")).toEqual(readingAndThoughts);
     const backup = await request("/api/export");
     await request("/api/workspace", { method: "DELETE" });
     expect((await request<WorkspaceData>("/api/tasks")).tasks).toHaveLength(0);
+    expect(await request("/api/life")).toEqual(emptyLifeData());
     await request("/api/restore", jsonOptions(backup));
     expect((await request<WorkspaceData>("/api/tasks")).tasks).toHaveLength(1);
+    expect(await request("/api/life")).toEqual(readingAndThoughts);
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 

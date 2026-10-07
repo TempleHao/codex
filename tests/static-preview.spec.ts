@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { expect, test as base, type Page } from "@playwright/test";
 import type { WorkspaceData } from "../lib/types";
+import type { LifeData } from "../lib/life";
 
 const STORAGE_KEY = "life-workbench-preview-v1";
 type Audit = { watch: (page: Page) => void };
@@ -17,7 +18,8 @@ const test = base.extend<{ audit: Audit }>({
       target.on("pageerror", error => pageErrors.push(error.message));
       target.on("console", message => { if (message.type() === "error") pageErrors.push(message.text()); });
       target.on("request", request => {
-        if (/(?:^|\/)api(?:\/|$)/.test(new URL(request.url()).pathname)) apiCalls.push(`${request.method()} ${request.url()}`);
+        const url = new URL(request.url());
+        if (url.origin === new URL(target.url() || "http://127.0.0.1:3200").origin && /(?:^|\/)api(?:\/|$)/.test(url.pathname)) apiCalls.push(`${request.method()} ${request.url()}`);
       });
       target.on("response", response => {
         if (response.status() >= 400) resourceErrors.push(`${response.status()} ${response.url()}`);
@@ -148,7 +150,7 @@ test("静态版聊天导入、刷新、完成、编辑、清空和备份恢复�
   const filename = await download.path();
   expect(filename).not.toBeNull();
   const backup = JSON.parse(await readFile(filename!, "utf8")) as WorkspaceData & { format: string; version: number };
-  expect(backup).toMatchObject({ format: "life-workbench-backup", version: 1 });
+  expect(backup).toMatchObject({ format: "life-workbench-backup", version: 2 });
   expect(backup.tasks).toEqual(saved.tasks);
   expect(backup.sources).toEqual(saved.sources);
   page.once("dialog", confirmation => confirmation.accept());
@@ -206,4 +208,98 @@ test("静态版手机视口可以收集、编辑和清空，页面无横向滚�
   await expect(page.getByRole("status")).toContainText("待办和原文已清空");
   expect(await savedData(page)).toEqual({ tasks: [], sources: [] });
   await expectNoHorizontalOverflow(page);
+});
+
+test("阅读划线到思考、待办和完整备份形成闭环，手机布局无溢出", async ({ page }) => {
+  test.setTimeout(60_000);
+  await openWorkspace(page);
+  await selectView(page, "阅读");
+  await page.getByRole("button", { name: "导入阅读 JSON", exact: true }).click();
+  const library = {
+    version: 1, source: "manual", items: [{ id: "book-test", title: "把想法带进生活", author: "测试作者", kind: "ebook", status: "reading", progress: 1, secondsRead: 3660 }],
+    highlights: [{ id: "highlight-test", bookId: "book-test", text: "把长期的方向变成今天能够做的一小步。", chapter: "从思考到行动" }],
+    stats: { totalSeconds: 7200, readingDays: 2, mode: "overall", period: null, dailySeconds: [{ date: "2026-10-01", seconds: 3600 }, { date: "2026-10-02", seconds: 0 }] }, syncedAt: null,
+  };
+  const dialog = page.getByRole("dialog");
+  await dialog.getByLabel("阅读资料 JSON", { exact: true }).fill(JSON.stringify(library));
+  await dialog.getByRole("button", { name: "预览资料", exact: true }).click();
+  expect((await savedData(page)).tasks).toHaveLength(0);
+  expect(await page.evaluate(key => localStorage.getItem(key), STORAGE_KEY)).toBeNull();
+  await dialog.getByRole("button", { name: "确认导入", exact: true }).click();
+  await expect(dialog).not.toBeVisible();
+  await expect(page.locator(".reading-book-facts")).toContainText("1%");
+  await expect(page.locator(".reading-heatmap")).toHaveAttribute("aria-label", /2026年已导入2天/);
+  await expect(page.locator(".reading-heat-missing")).not.toHaveCount(0);
+  const highlight = page.locator(".reading-highlight").filter({ hasText: library.highlights[0].text });
+  await highlight.getByRole("button", { name: /思考/ }).click();
+  await expect(page.getByLabel(/^原摘录/)).toHaveValue(library.highlights[0].text);
+  expect((await savedData(page)).tasks).toHaveLength(0);
+  await page.getByLabel("思考标题", { exact: true }).fill("周末整理我的生活计划");
+  await page.getByLabel("我的想法", { exact: true }).fill("先把健康、家务和阅读安排到一周里，留一些空白。");
+  await page.getByRole("button", { name: "保存思考", exact: true }).click();
+  await page.getByRole("button", { name: "转为待办：周末整理我的生活计划", exact: true }).click();
+  const taskDialog = page.getByRole("dialog");
+  await expect(taskDialog.getByLabel("要做什么", { exact: true })).toHaveValue("周末整理我的生活计划");
+  expect((await savedData(page)).tasks).toHaveLength(0);
+  await taskDialog.getByRole("button", { name: "保存待办", exact: true }).click();
+  await expect(taskDialog).not.toBeVisible();
+  const saved = await savedData(page);
+  expect(saved.tasks).toHaveLength(1);
+  expect(saved.tasks[0].notes).toContain(library.highlights[0].text);
+  const life = await page.evaluate(key => JSON.parse(localStorage.getItem(key)!).life as LifeData, STORAGE_KEY);
+  expect(life.reading.books).toHaveLength(1);
+  expect(life.thoughts[0]).toMatchObject({ title: "周末整理我的生活计划", bookId: "book-test", highlightId: "highlight-test", sourceExcerpt: library.highlights[0].text });
+  const downloadPromise = page.waitForEvent("download");
+  await page.getByRole("button", { name: "导出备份", exact: true }).click();
+  const backupPath = await (await downloadPromise).path();
+  const backup = JSON.parse(await readFile(backupPath!, "utf8"));
+  expect(backup.version).toBe(2);
+  expect(backup.life).toEqual(life);
+  page.once("dialog", confirmation => confirmation.accept());
+  await page.getByRole("button", { name: "清空浏览器数据", exact: true }).click();
+  await page.getByLabel("选择待办备份文件").setInputFiles(backupPath!);
+  await expect(page.getByRole("status").first()).toContainText("备份已恢复");
+  expect(await savedData(page)).toEqual(saved);
+  expect(await page.evaluate(key => JSON.parse(localStorage.getItem(key)!).life, STORAGE_KEY)).toEqual(life);
+  await page.setViewportSize({ width: 390, height: 844 });
+  for (const view of ["阅读", "思考", "生活全景"]) {
+    await selectView(page, view);
+    await expectNoHorizontalOverflow(page);
+    await page.screenshot({ path: `/tmp/life-${view === "阅读" ? "reading" : view === "思考" ? "thoughts" : "overview"}-mobile.png`, fullPage: true });
+  }
+});
+
+test("微信读书临时读取只发往官方接口，确认后才存资料，密钥不进入备份", async ({ page }) => {
+  await openWorkspace(page);
+  const calls: string[] = [];
+  const token = "test-only-fake-key-do-not-use";
+  await page.route("https://i.weread.qq.com/api/agent/gateway", async route => {
+    const request = route.request();
+    const headers = { "Access-Control-Allow-Origin": "*", "Access-Control-Allow-Headers": "*", "Access-Control-Allow-Methods": "POST, OPTIONS" };
+    if (request.method() === "OPTIONS") { await route.fulfill({ status: 204, headers }); return; }
+    expect(request.headers()["authorization"]).toBe(`Bearer ${token}`);
+    const body = request.postDataJSON();
+    expect(body.skill_version).toBe("1.0.4");
+    calls.push(body.api_name);
+    const payload = body.api_name === "/shelf/sync" ? { books: [{ bookId: "sync-test", title: "临时读取测试书", author: "", finishReading: 0 }], albums: [], mp: {} } : { totalReadTime: 3600, readDays: 1, dailyReadTimes: {} };
+    await route.fulfill({ status: 200, contentType: "application/json", headers, body: JSON.stringify(payload) });
+  });
+  await selectView(page, "阅读");
+  await page.getByText("从微信读书带来阅读记录", { exact: true }).click();
+  await page.getByLabel("微信读书 API Key", { exact: true }).fill(token);
+  await page.getByLabel("同时取回划线与想法", { exact: true }).uncheck();
+  await page.getByRole("button", { name: "读取并预览", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "已取回，等你确认", exact: true })).toBeVisible();
+  expect(calls).toEqual(["/shelf/sync", "/readdata/detail", "/readdata/detail"]);
+  expect(await page.evaluate(key => localStorage.getItem(key), STORAGE_KEY)).toBeNull();
+  await page.getByRole("button", { name: "保存到阅读", exact: true }).click();
+  await expect(page.getByRole("status").filter({ hasText: "阅读记录已保存" })).toBeVisible();
+  const raw = await page.evaluate(key => localStorage.getItem(key), STORAGE_KEY);
+  expect(raw).not.toContain(token);
+  expect(JSON.parse(raw!).life.reading.books[0].title).toBe("临时读取测试书");
+  await page.reload();
+  await expect(page.getByRole("button", { name: "收集待办", exact: true })).toBeEnabled();
+  await selectView(page, "阅读");
+  await page.getByText("从微信读书带来阅读记录", { exact: true }).click();
+  await expect(page.getByLabel("微信读书 API Key", { exact: true })).toHaveValue("");
 });

@@ -5,9 +5,17 @@ import { AREAS, type Area, type ImportDraft, type Task, type TaskInput, type Wor
 import { chinaToday, displayDate } from "@/lib/dates";
 import { parseImport } from "@/lib/import";
 import { request, IS_STATIC_PREVIEW, APP_BASE_PATH } from "@/lib/client";
+import { emptyLifeData, type LifeData } from "@/lib/life";
+import { mergeReadingLibraries, type ReadingLibrary } from "@/lib/reading";
+import ReadingPanel, { type ReadingTaskDraft, type ReadingThoughtDraft } from "@/components/ReadingPanel";
+import ThoughtsPanel from "@/components/ThoughtsPanel";
+import LifePanel from "@/components/LifePanel";
+import WeReadConnect from "@/components/WeReadConnect";
+import { MAX_BACKUP_BYTES } from "@/lib/backup";
 
-type View = "today" | "inbox" | "all" | "done";
-type IconName = "sun" | "inbox" | "list" | "check" | "plus" | "arrow" | "close" | "search" | "download" | "upload" | "edit" | "trash" | "leaf" | "spark" | "file" | "chevron";
+type TaskView = "today" | "inbox" | "all" | "done";
+type View = TaskView | "reading" | "thoughts" | "life";
+type IconName = "sun" | "inbox" | "list" | "check" | "plus" | "arrow" | "close" | "search" | "download" | "upload" | "edit" | "trash" | "leaf" | "spark" | "file" | "chevron" | "book";
 
 function Icon({ name, size = 20, className = "" }: { name: IconName; size?: number; className?: string }) {
   const paths: Record<IconName, React.ReactNode> = {
@@ -21,6 +29,7 @@ function Icon({ name, size = 20, className = "" }: { name: IconName; size?: numb
     leaf: <><path d="M5 18C-1 6 13 2 21 3c0 9-3 18-13 17M4 22 17 8"/></>,
     spark: <><path d="m12 3 2.5 6.5L21 12l-6.5 2.5L12 21l-2.5-6.5L3 12l6.5-2.5L12 3Z"/></>,
     file: <><path d="M14 2H5v20h14V7l-5-5Zm0 0v5h5M8 12h8M8 16h6"/></>, chevron: <path d="m9 5 7 7-7 7"/>,
+    book: <><path d="M12 5C8 3 4 3 2 4v15c3-1 7-1 10 1 3-2 7-2 10-1V4c-2-1-6-1-10 1Z"/><path d="M12 5v15"/></>,
   };
   return <svg className={className} width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">{paths[name]}</svg>;
 }
@@ -29,8 +38,10 @@ const EMPTY: WorkspaceData = { tasks: [], sources: [] };
 const NAV: { id: View; title: string; icon: IconName }[] = [
   { id: "today", title: "今天", icon: "sun" }, { id: "inbox", title: "收件箱", icon: "inbox" },
   { id: "all", title: "全部待办", icon: "list" }, { id: "done", title: "已完成", icon: "check" },
+  { id: "reading", title: "阅读", icon: "book" }, { id: "thoughts", title: "思考", icon: "file" },
+  { id: "life", title: "生活全景", icon: "leaf" },
 ];
-const TITLES: Record<View, { title: string; description: string; empty: string; detail: string }> = {
+const TITLES: Record<TaskView, { title: string; description: string; empty: string; detail: string }> = {
   today: { title: "今天，把生活理顺一点。", description: "留一点空间，给重要的事，也给自己。", empty: "今天还没有安排", detail: "从一个小行动开始，或把脑海里的事情一次收进来。" },
   inbox: { title: "先收下来，慢慢理清。", description: "这里放着尚未安排日期，或需要再想一想的事。", empty: "收件箱很清爽", detail: "尚未安排日期或待确认的事项，会出现在这里。" },
   all: { title: "每件事，都有它的位置。", description: "生活的全貌，从一个个可以行动的小步骤开始。", empty: "你的待办，从这里开始", detail: "先记录一件事，或者导入聊天中整理好的整批待办。" },
@@ -62,6 +73,8 @@ function TaskFields({ value, onChange, prefix, disabled = false }: { value: Task
 
 export default function Home() {
   const [data, setData] = useState<WorkspaceData>(EMPTY);
+  const [life, setLife] = useState<LifeData>(emptyLifeData);
+  const [thoughtDraft, setThoughtDraft] = useState<ReadingThoughtDraft | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadFailed, setLoadFailed] = useState(false);
   const [view, setView] = useState<View>("today");
@@ -91,7 +104,10 @@ export default function Home() {
 
   async function load() {
     setLoading(true); setLoadFailed(false); setError("");
-    try { setData(await request<WorkspaceData>("/api/tasks")); }
+    try {
+      const [tasks, lifeData] = await Promise.all([request<WorkspaceData>("/api/tasks"), request<LifeData>("/api/life")]);
+      setData(tasks); setLife(lifeData);
+    }
     catch (cause) { setLoadFailed(true); setError(cause instanceof Error ? cause.message : "暂时无法读取待办，请重试。"); }
     finally { setLoading(false); }
   }
@@ -117,17 +133,36 @@ export default function Home() {
 
   const isToday = (task: Task) => task.status === "todo" && (task.plannedDate === today || Boolean(task.dueDate && task.dueDate <= today));
   const isInbox = (task: Task) => task.status === "todo" && ((!task.plannedDate && !task.dueDate) || task.needsClarification.some(item => item.trim()));
-  const counts = { today: data.tasks.filter(isToday).length, inbox: data.tasks.filter(isInbox).length, all: data.tasks.filter(t => t.status === "todo").length, done: data.tasks.filter(t => t.status === "done").length };
+  const counts: Record<View, number> = { today: data.tasks.filter(isToday).length, inbox: data.tasks.filter(isInbox).length, all: data.tasks.filter(t => t.status === "todo").length, done: data.tasks.filter(t => t.status === "done").length, reading: life.reading.books.length, thoughts: life.thoughts.length, life: data.tasks.filter(t => t.status === "todo").length };
   const tasks = data.tasks.filter(task => view === "today" ? isToday(task) : view === "inbox" ? isInbox(task) : view === "done" ? task.status === "done" : task.status === "todo")
     .filter(task => area === "all" || task.area === area)
     .filter(task => `${task.title} ${task.notes} ${task.sourceExcerpt} ${task.needsClarification.join(" ")}`.toLocaleLowerCase().includes(search.toLocaleLowerCase()))
     .sort((a, b) => view === "done" ? (b.completedAt || "").localeCompare(a.completedAt || "") : Number(b.priority === "high") - Number(a.priority === "high") || (a.dueDate || a.plannedDate || "9999").localeCompare(b.dueDate || b.plannedDate || "9999") || b.createdAt.localeCompare(a.createdAt));
   const selectedCount = included.filter(Boolean).length;
-  const active = TITLES[view];
+  const taskView = view === "today" || view === "inbox" || view === "all" || view === "done";
+  const active = TITLES[taskView ? view : "today"];
   const dateLabel = today ? new Intl.DateTimeFormat("zh-CN", { timeZone: "Asia/Shanghai", month: "long", day: "numeric", weekday: "long" }).format(new Date(`${today}T12:00:00+08:00`)) : "上海时间";
   function selectView(next: View) { setView(next); setArea("all"); setSearch(""); setExpanded(null); }
   function openImport() { setModal("import"); setModalError(""); }
   function openManual() { setTaskForm(freshTask()); setEditingId(null); setModalError(""); batchId.current = null; setModal("manual"); }
+  function createLinkedTask(input: ReadingTaskDraft) {
+    const notes = input.notes.slice(0, 5_000);
+    setTaskForm({ ...freshTask(), title: input.title.slice(0, 300), notes, area: input.area ?? "阅读", sourceExcerpt: input.notes.slice(0, 2_000) });
+    setEditingId(null); setModalError(""); batchId.current = null; setModal("manual");
+    if (notes.length < input.notes.length) setStatus("待办备注节选前 5000 字，全文保留在阅读或思考中。");
+  }
+  async function saveReading(next: ReadingLibrary) {
+    const latest = await request<LifeData>("/api/life");
+    if (JSON.stringify(latest.reading) !== JSON.stringify(life.reading)) { setLife(latest); throw new Error("阅读记录已在另一个页面更新，请检查最新书架后重新保存。"); }
+    const saved = await request<LifeData>("/api/life", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...latest, reading: next }) });
+    setLife(saved);
+  }
+  async function saveThoughts(next: LifeData["thoughts"]) {
+    const latest = await request<LifeData>("/api/life");
+    if (JSON.stringify(latest.thoughts) !== JSON.stringify(life.thoughts)) { setLife(latest); throw new Error("思考记录已在另一个页面更新，草稿已保留，请检查最新记录。"); }
+    const saved = await request<LifeData>("/api/life", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...latest, thoughts: next }) });
+    setLife(saved);
+  }
   function editTask(task: Task) { setTaskForm({ ...task }); setEditingId(task.id); setModalError(""); setModal("edit"); }
   function readImport() {
     setModalError(""); batchId.current = null;
@@ -164,7 +199,7 @@ export default function Home() {
         const cleanForm: TaskInput = { title: taskForm.title.trim(), notes: taskForm.notes, area: taskForm.area, priority: taskForm.priority, plannedDate: taskForm.plannedDate, dueDate: taskForm.dueDate, needsClarification: taskForm.needsClarification.map(item => item.trim()).filter(Boolean), sourceExcerpt: taskForm.sourceExcerpt };
         const updated = await request<Task>(`/api/tasks/${editingId}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(cleanForm) });
         setData(previous => ({ ...previous, tasks: previous.tasks.map(task => task.id === updated.id ? updated : task) })); setStatus("待办已更新。");
-      } else { setData(await saveNewTasks([{ ...taskForm, sourceExcerpt: taskForm.title.trim() }], [taskForm.title.trim(), taskForm.notes].filter(Boolean).join("\n"))); setStatus("已保存一条新的待办。"); }
+      } else { setData(await saveNewTasks([{ ...taskForm, sourceExcerpt: taskForm.sourceExcerpt || taskForm.title.trim() }], [taskForm.title.trim(), taskForm.notes].filter(Boolean).join("\n"))); setStatus("已保存一条新的待办。"); }
       setModal(null); batchId.current = null;
     } catch (cause) { setModalError(cause instanceof Error ? cause.message : "保存失败，请重试。"); }
     finally { setSaving(false); }
@@ -188,26 +223,26 @@ export default function Home() {
     if (exporting) return; setExporting(true); setError("");
     try {
       const backup = await request("/api/export"); const url = URL.createObjectURL(new Blob([JSON.stringify(backup, null, 2)], { type: "application/json" }));
-      const link = document.createElement("a"); link.href = url; link.download = `有序-备份-${today}.json`; document.body.appendChild(link); link.click(); link.remove(); URL.revokeObjectURL(url); setStatus("完整备份已导出，包含待办与原文记录。");
+      const link = document.createElement("a"); link.href = url; link.download = `有序-备份-${today}.json`; document.body.appendChild(link); link.click(); link.remove(); URL.revokeObjectURL(url); setStatus("完整备份已导出，包含待办、原文、阅读与思考。");
     } catch (cause) { setError(cause instanceof Error ? cause.message : "导出失败，请重试。"); }
     finally { setExporting(false); }
   }
   async function restoreData(file: File | undefined) {
     if (!file || restoring) return; setRestoring(true); setError("");
     try {
-      if (file.size > 5_000_000) throw new Error("备份文件过大，请选择小于 5 MB 的 JSON 文件。");
+      if (file.size > MAX_BACKUP_BYTES) throw new Error("备份文件过大，请选择小于 20 MB 的 JSON 文件。");
       const backup: unknown = JSON.parse(await file.text());
-      setData(await request<WorkspaceData>("/api/restore", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(backup) })); setStatus("备份已恢复，原有待办保留，重复内容已跳过。");
+      setData(await request<WorkspaceData>("/api/restore", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(backup) })); setLife(await request<LifeData>("/api/life")); setStatus("备份已恢复，原有内容保留，重复内容已跳过。");
     } catch (cause) { setError(cause instanceof SyntaxError ? "这个文件不是有效的 JSON 备份。" : cause instanceof Error ? cause.message : "恢复失败，请检查备份文件。"); }
     finally { setRestoring(false); if (restoreInput.current) restoreInput.current.value = ""; }
   }
   async function clearBrowserData() {
-    if (!IS_STATIC_PREVIEW || clearing || !window.confirm("清空这个浏览器中保存的全部待办和原文？此操作无法撤销。请先导出需要保留的备份；已导出的文件不会受影响。")) return;
+    if (!IS_STATIC_PREVIEW || clearing || !window.confirm("清空这个浏览器中保存的全部待办、原文、阅读和思考？此操作无法撤销。请先导出需要保留的备份；已导出的文件不会受影响。")) return;
     setClearing(true); setError("");
     try {
       await request("/api/workspace", { method: "DELETE" });
-      setData(EMPTY); setDraft(null); setImportText(""); setOriginalText(""); setIncluded([]); setSample(false); batchId.current = null;
-      selectView("today"); setStatus("当前浏览器中的待办和原文已清空。");
+      setData(EMPTY); setLife(emptyLifeData()); setThoughtDraft(null); setDraft(null); setImportText(""); setOriginalText(""); setIncluded([]); setSample(false); batchId.current = null;
+      selectView("today"); setStatus("当前浏览器中的待办和原文已清空，阅读与思考也已清空。");
     } catch (cause) { setError(cause instanceof Error ? cause.message : "清空失败，请重试。"); }
     finally { setClearing(false); }
   }
@@ -224,13 +259,13 @@ export default function Home() {
     <main className="main">
       <header className="topbar"><span className="breadcrumb">我的空间 <span>/</span> <strong>{NAV.find(item => item.id === view)?.title}</strong></span><span className="date-label"><Icon name="sun" size={16}/>{dateLabel}</span></header>
       <div className="main-content">
-        <section className="page-intro"><div><p className="eyebrow">A LITTLE ORDER, A LITTLE MORE SPACE</p><h1>{active.title.split("，")[0]}，<span className="intro-title-tail">{active.title.split("，")[1]}</span></h1><p className="intro-description">{active.description}</p></div><button className="button primary collect-button" onClick={openImport} disabled={loading || loadFailed}><Icon name="plus" size={18}/>收集待办</button></section>
+        {taskView && <section className="page-intro"><div><p className="eyebrow">A LITTLE ORDER, A LITTLE MORE SPACE</p><h1>{active.title.split("，")[0]}，<span className="intro-title-tail">{active.title.split("，")[1]}</span></h1><p className="intro-description">{active.description}</p></div><button className="button primary collect-button" onClick={openImport} disabled={loading || loadFailed}><Icon name="plus" size={18}/>收集待办</button></section>}
         {IS_STATIC_PREVIEW && <aside className="preview-notice" aria-label="试用版数据说明"><Icon name="file" size={17}/><div><strong>GitHub Pages 试用版</strong><p>数据仅保存在当前浏览器，手机与电脑独立，记得导出备份。</p><p>清除浏览器数据会删除记录；无需连接外部 AI。</p></div></aside>}
 
         <div className="feedback" aria-live="polite" role="status">{status && <p className="success-message"><Icon name="check" size={16}/>{status}<button className="dismiss" aria-label="关闭提示" onClick={() => setStatus("")}><Icon name="close" size={15}/></button></p>}</div>
         {error && <div className="error-message" role="alert"><span>{error}</span>{loadFailed && <button onClick={() => void load()}>重新加载</button>}<button className="dismiss" onClick={() => setError("")} aria-label="关闭错误提示"><Icon name="close" size={15}/></button></div>}
 
-        <section className="overview" aria-label="待办概览"><button className={`stat-card ${view === "today" ? "selected" : ""}`} onClick={() => selectView("today")}><span className="stat-icon green"><Icon name="sun"/></span><span className="stat-label">今天要做<small>今天安排 · 到期 · 逾期</small></span><strong>{loading ? "—" : counts.today}<span>件</span></strong></button><button className={`stat-card ${view === "inbox" ? "selected" : ""}`} onClick={() => selectView("inbox")}><span className="stat-icon peach"><Icon name="inbox"/></span><span className="stat-label">留待整理<small>未安排日期 · 待确认</small></span><strong>{loading ? "—" : counts.inbox}<span>件</span></strong></button><button className={`stat-card ${view === "done" ? "selected" : ""}`} onClick={() => selectView("done")}><span className="stat-icon neutral"><Icon name="check"/></span><span className="stat-label">已经完成<small>每一小步，都有意义</small></span><strong>{loading ? "—" : counts.done}<span>件</span></strong></button></section>
+        {taskView && <><section className="overview" aria-label="待办概览"><button className={`stat-card ${view === "today" ? "selected" : ""}`} onClick={() => selectView("today")}><span className="stat-icon green"><Icon name="sun"/></span><span className="stat-label">今天要做<small>今天安排 · 到期 · 逾期</small></span><strong>{loading ? "—" : counts.today}<span>件</span></strong></button><button className={`stat-card ${view === "inbox" ? "selected" : ""}`} onClick={() => selectView("inbox")}><span className="stat-icon peach"><Icon name="inbox"/></span><span className="stat-label">留待整理<small>未安排日期 · 待确认</small></span><strong>{loading ? "—" : counts.inbox}<span>件</span></strong></button><button className={`stat-card ${view === "done" ? "selected" : ""}`} onClick={() => selectView("done")}><span className="stat-icon neutral"><Icon name="check"/></span><span className="stat-label">已经完成<small>每一小步，都有意义</small></span><strong>{loading ? "—" : counts.done}<span>件</span></strong></button></section>
 
         <div className="content-grid"><section className="task-panel" aria-label={NAV.find(item => item.id === view)?.title}>
           <div className="panel-heading"><div><span className="section-kicker">{view === "today" ? "FOCUS ON TODAY" : view === "done" ? "SMALL WINS" : "MAKE ROOM FOR LIFE"}</span><h2>{view === "today" ? "今天的行动" : NAV.find(item => item.id === view)?.title}<span className="count-pill">{tasks.length}</span></h2></div>{view !== "done" && <button className="text-button" onClick={openManual} disabled={loading || loadFailed}><Icon name="plus" size={16}/>新建待办</button>}</div>
@@ -244,6 +279,13 @@ export default function Home() {
         </section>
 
         <aside className="right-column"><section className="collection-card"><div className="collection-icon"><Icon name="spark" size={24}/></div><p className="section-kicker">从想法，到行动</p><h2>想到哪里，<br/>就先说到哪里。</h2><p className="collection-description">一大段想法、零碎的琐事，<br/>都可以慢慢变成清晰的下一步。</p><ol className="collection-steps"><li><span>01</span><div>在聊天里随意说<p>像和朋友聊天，不用先整理。</p></div></li><li><span>02</span><div>让助手拆成待办<p>复制整理好的 JSON 或清单。</p></div></li><li><span>03</span><div>在这里检查、保存<p>日期、领域和细节，由你定。</p></div></li></ol><button className="button collection-action" onClick={openImport} disabled={loading || loadFailed}>导入整理结果<Icon name="arrow" size={17}/></button><p className="collection-note">不会自动读取当前聊天。</p></section><section className="small-note"><Icon name="leaf" size={18}/><p>不用给每件事都安排今天。<br/>留在收件箱，也是一种安排。</p></section></aside></div>
+        </>}
+        {!taskView && !loading && !loadFailed && <>
+          {view === "reading" && <><ReadingPanel library={life.reading} onLibraryChange={saveReading} onCreateTask={createLinkedTask} onCreateThought={input => { setThoughtDraft(input); selectView("thoughts"); }}/><WeReadConnect onImport={next => saveReading(mergeReadingLibraries(life.reading, next))}/></>}
+          {view === "thoughts" && <ThoughtsPanel thoughts={life.thoughts} library={life.reading} onThoughtsChange={saveThoughts} onCreateTask={createLinkedTask} initialDraft={thoughtDraft} onDraftConsumed={() => setThoughtDraft(null)}/>}
+          {view === "life" && <LifePanel data={data} life={life} today={today} onOpenArea={next => { selectView("all"); setArea(next); }} onCreateTask={next => { openManual(); setTaskForm({ ...freshTask(), area: next }); }} onOpenReading={() => selectView("reading")} onOpenThoughts={() => selectView("thoughts")}/>}
+        </>}
+        {!taskView && loading && <p className="domain-loading" role="status">正在打开你的生活记录…</p>}
         <footer className="page-footer"><span>有序 <span className="footer-dot">·</span> {IS_STATIC_PREVIEW ? "GitHub Pages 试用版" : "给生活一点空间"}</span><div><span className="storage-label">{IS_STATIC_PREVIEW ? "内容仅保存在当前浏览器" : "内容保存在当前服务器"}</span><button className="footer-button" onClick={() => void exportData()} disabled={exporting || loading || loadFailed || clearing}><Icon name="download" size={14}/>{exporting ? "正在导出…" : "导出备份"}</button><button className="footer-button" onClick={() => restoreInput.current?.click()} disabled={restoring || loading || loadFailed || clearing}><Icon name="upload" size={14}/>{restoring ? "正在恢复…" : "恢复备份"}</button>{IS_STATIC_PREVIEW && <button className="footer-button danger" onClick={() => void clearBrowserData()} disabled={clearing || loading || loadFailed || restoring || saving}><Icon name="trash" size={14}/>{clearing ? "正在清空…" : "清空浏览器数据"}</button>}<input className="visually-hidden" type="file" ref={restoreInput} accept=".json,application/json" aria-label="选择待办备份文件" onChange={event => void restoreData(event.target.files?.[0])}/></div></footer>
       </div>
     </main>
