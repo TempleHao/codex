@@ -44,4 +44,4 @@ except urllib.error.HTTPError as error:
     result["publicTitlePage"] = {"status": error.code}
 except Exception as error:
     result["publicTitlePage"] = {"failure": type(error).__name__}
-print(json.dumps(result, ensure_ascii=False))
+print("::notice title=Public poster probe::" + json.dumps(result, ensure_ascii=False))
