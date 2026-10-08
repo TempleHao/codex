@@ -46,7 +46,7 @@ describe("temporary WeRead synchronization (offline gateway mocks)", () => {
         ? { totalBookCount: 2, totalNoteCount: 999, books: [notebook("a", 20, { reviewCount: 2, bookmarkCount: 994 })], hasMore: 1 }
         : { books: [notebook("b", 10)], hasMore: 0 };
       if (body.api_name === "/book/bookmarklist") return { updated: [highlight(`h-${body.bookId}`, String(body.bookId)), { bookmarkId: "not-exported", type: 0 }], chapters: [{ chapterUid: 7, title: "第七章" }] };
-      if (body.api_name === "/review/list/mine") return body.bookid === "a" && body.synckey === undefined
+      if (body.api_name === "/review/list/mine") return body.bookid === "a" && body.synckey === 0
         ? { reviews: [thought("a1")], hasMore: 1, synckey: 55, totalCount: 2 }
         : { reviews: [thought(body.bookid === "a" ? "a2" : "b1", "")], hasMore: 0 };
       throw new Error("Unexpected offline mock request");
@@ -74,7 +74,8 @@ describe("temporary WeRead synchronization (offline gateway mocks)", () => {
     const requestedYearTimestamp = Number(bodies.find(body => body.mode === "annually")?.baseTime) * 1_000;
     for (const timeZone of ["UTC", "Asia/Shanghai"]) expect(new Intl.DateTimeFormat("en", { year: "numeric", timeZone }).format(new Date(requestedYearTimestamp))).toBe("2027");
     expect(bodies.filter(body => body.api_name === "/user/notebooks").map(body => body.lastSort)).toEqual([undefined, 20]);
-    expect(bodies.filter(body => body.api_name === "/review/list/mine").map(body => body.synckey)).toEqual([undefined, 55, undefined]);
+    expect(bodies.filter(body => body.api_name === "/review/list/mine").map(body => body.synckey)).toEqual([0, 55, 0]);
+    expect(bodies.filter(body => body.api_name === "/review/list/mine").every(body => body.count === 100)).toBe(true);
     expect(onProgress).toHaveBeenLastCalledWith({ stage: "complete", message: "已取回阅读数据，请先查看预览。" });
     expect(JSON.stringify(library)).not.toContain("offline-placeholder");
   });
@@ -120,7 +121,7 @@ describe("temporary WeRead synchronization (offline gateway mocks)", () => {
     const { client, bodies } = mocked(body => {
       if (body.api_name === "/user/notebooks") return { books: [notebook("a", 10, { noteCount: 0 })], hasMore: 0 };
       if (body.api_name === "/book/bookmarklist") return { updated: [] };
-      if (body.api_name === "/review/list/mine") return { reviews: [thought(body.synckey === undefined ? "t1" : "t2")], hasMore: 1, synckey: 55 };
+      if (body.api_name === "/review/list/mine") return { reviews: [thought(body.synckey === 0 ? "t1" : "t2")], hasMore: 1, synckey: 55 };
       return basic(body);
     });
     await expect(fetchWeReadLibrary(client, { now })).rejects.toMatchObject({ code: "PaginationError", reason: "thought_cursor_repeated" });
@@ -167,7 +168,7 @@ describe("temporary WeRead synchronization (offline gateway mocks)", () => {
         ? { totalBookCount: 2, books: [notebook("a", 20, { reviewCount: 2 })], hasMore: true }
         : { totalBookCount: 2, books: [notebook("b", 10, { reviewCount: 0 })], hasMore: false };
       if (body.api_name === "/book/bookmarklist") return { updated: [highlight(`h-${body.bookId}`, String(body.bookId))] };
-      if (body.api_name === "/review/list/mine") return body.synckey === undefined
+      if (body.api_name === "/review/list/mine") return body.synckey === 0
         ? { totalCount: 2, reviews: [thought("first")], hasMore: true, synckey: 55 }
         : { totalCount: 2, reviews: [thought("second")], hasMore: false };
       return basic(body);
@@ -176,7 +177,7 @@ describe("temporary WeRead synchronization (offline gateway mocks)", () => {
     expect(result.books).toHaveLength(2);
     expect(result.highlights).toHaveLength(4);
     expect(bodies.filter(body => body.api_name === "/user/notebooks").map(body => body.lastSort)).toEqual([undefined, 20]);
-    expect(bodies.filter(body => body.api_name === "/review/list/mine").map(body => body.synckey)).toEqual([undefined, 55]);
+    expect(bodies.filter(body => body.api_name === "/review/list/mine").map(body => body.synckey)).toEqual([0, 55]);
   });
 
   it("identifies a changed notebook total without exposing any book metadata", async () => {
@@ -186,6 +187,46 @@ describe("temporary WeRead synchronization (offline gateway mocks)", () => {
         : { totalBookCount: 3, books: [notebook("b", 10)], hasMore: 0 }
       : basic(body));
     await expect(fetchWeReadLibrary(client, { now })).rejects.toMatchObject({ code: "InvalidData", reason: "notebook_total_changed" });
+  });
+
+  it("requests thoughts with count 100 and explicit initial synckey zero, then collects every page", async () => {
+    const { client, bodies } = mocked(body => {
+      if (body.api_name === "/user/notebooks") return { books: [notebook("a", 10, { noteCount: 0, reviewCount: 150 })], hasMore: 0, totalBookCount: 1 };
+      if (body.api_name === "/review/list/mine") return body.synckey === 0
+        ? { totalCount: 150, reviews: Array.from({ length: 100 }, (_, index) => thought(`t-${index}`)), hasMore: 1, synckey: 100 }
+        : { totalCount: 150, reviews: Array.from({ length: 50 }, (_, index) => thought(`t-${index + 100}`)), hasMore: 0 };
+      return basic(body);
+    });
+    const result = await fetchWeReadLibrary(client, { now });
+    expect(result.highlights).toHaveLength(150);
+    expect(bodies.filter(body => body.api_name === "/review/list/mine")).toEqual([
+      { bookid: "a", count: 100, synckey: 0, api_name: "/review/list/mine", skill_version: "1.0.4" },
+      { bookid: "a", count: 100, synckey: 100, api_name: "/review/list/mine", skill_version: "1.0.4" },
+    ]);
+    expect(bodies.find(body => body.api_name === "/user/notebooks")?.count).toBe(20);
+  });
+
+  it("still requests thoughts with unknown notebook and response totals", async () => {
+    const { client, bodies } = mocked(body => {
+      if (body.api_name === "/user/notebooks") return { books: [notebook("a", 10, { noteCount: 0, reviewCount: undefined })], hasMore: 0 };
+      if (body.api_name === "/review/list/mine") return { reviews: [thought("unknown-total")], hasMore: 0 };
+      return basic(body);
+    });
+    expect((await fetchWeReadLibrary(client, { now })).highlights).toHaveLength(1);
+    expect(bodies.find(body => body.api_name === "/review/list/mine")).toMatchObject({ bookid: "a", count: 100, synckey: 0 });
+  });
+
+  it.each([
+    [0, 1, "thought_total_zero_with_content"],
+    [1, 2, "thought_total_excess"],
+    [3, 2, "thought_total_shortfall"],
+  ] as const)("identifies inconsistent declared thought totals with the fixed %s/%s relationship", async (declared, observed, reason) => {
+    const { client } = mocked(body => {
+      if (body.api_name === "/user/notebooks") return { books: [notebook("a", 10, { noteCount: 0, reviewCount: undefined })], hasMore: 0 };
+      if (body.api_name === "/review/list/mine") return { totalCount: declared, reviews: Array.from({ length: observed }, (_, index) => thought(`t-${index}`)), hasMore: 0 };
+      return basic(body);
+    });
+    await expect(fetchWeReadLibrary(client, { now })).rejects.toMatchObject({ code: "InvalidData", reason });
   });
 
   it("fully reads more than 80 notebook books across all pages", async () => {

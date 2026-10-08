@@ -238,6 +238,41 @@ describe("free GitHub WeRead encrypted synchronization job", () => {
     expect(await readStatus()).toEqual(status);
   });
 
+  it.each(["thought_total_zero_with_content", "thought_total_excess", "thought_total_shortfall"] as const)("logs the fixed %s relationship without publishing a partial reading snapshot", async reason => {
+    await writeFile(path.join(output, SYNC_FILENAME), JSON.stringify(oldEnvelope));
+    const deps = offlineDependencies();
+    deps.client.getLastDiagnostics.mockReturnValue({ operation: "/review/list/mine", responsePaginationType: "number" });
+    deps.fetchLibrary.mockImplementation(async (_client, options) => {
+      options?.onProgress?.({ stage: "notes", message: `${token} ${library.books[0].title}`, completed: 123_456, total: 789_012 });
+      throw new WeReadSyncError("InvalidData", library.highlights[0].text, undefined, reason);
+    });
+    expect(await runWeReadSyncJob(environment(), deps)).toMatchObject({ state: "preserved", failureCode: "invalid_data" });
+    expect(await readCipher()).toEqual(oldEnvelope);
+    expect(deps.encrypt).not.toHaveBeenCalled();
+    expect(deps.onDiagnostic).toHaveBeenCalledExactlyOnceWith({ stage: "notes", reason,
+      operation: "/review/list/mine", responsePaginationType: "number" });
+    const text = JSON.stringify(deps.onDiagnostic.mock.calls);
+    for (const privateText of [token, library.books[0].title, library.highlights[0].text, "123456", "789012"]) expect(text).not.toContain(privateText);
+    expect(await readStatus()).not.toHaveProperty("reason");
+  });
+
+  it("preserves old ciphertext when the real orchestrator receives fewer thoughts than the declared total", async () => {
+    await writeFile(path.join(output, SYNC_FILENAME), JSON.stringify(oldEnvelope));
+    const deps = offlineDependencies();
+    deps.client.shelf.mockResolvedValue({ books: [{ bookId: library.books[0].id, title: library.books[0].title, author: "作者" }], albums: [] });
+    deps.client.stats.mockResolvedValue({ totalReadTime: 600, baseTime: 0 });
+    deps.client.notebooks.mockResolvedValue({ books: [{ bookId: library.books[0].id, book: { title: library.books[0].title, author: "作者" }, noteCount: 0, reviewCount: 2 }], totalBookCount: 1, hasMore: 0 });
+    deps.client.thoughts.mockResolvedValue({ reviews: [{ review: { reviewId: "offline-review", content: library.highlights[0].thought } }], totalCount: 2, hasMore: 0 });
+    deps.client.getLastDiagnostics.mockReturnValue({ operation: "/review/list/mine", responsePaginationType: "number" });
+    const status = await runWeReadSyncJob(environment({ WEREAD_SYNC_INCLUDE_NOTES: "true" }), { ...deps, fetchLibrary: fetchWeReadLibrary });
+    expect(status).toMatchObject({ state: "preserved", failureCode: "invalid_data" });
+    expect(deps.client.thoughts).toHaveBeenCalledExactlyOnceWith(library.books[0].id, { count: 100, synckey: 0 });
+    expect(deps.onDiagnostic).toHaveBeenCalledExactlyOnceWith({ stage: "notes", reason: "thought_total_shortfall",
+      operation: "/review/list/mine", responsePaginationType: "number" });
+    expect(deps.encrypt).not.toHaveBeenCalled();
+    expect(await readCipher()).toEqual(oldEnvelope);
+  });
+
   it("rejects arbitrary diagnostic fields and progress stages rather than reflecting them into logs", async () => {
     const deps = offlineDependencies();
     deps.client.getLastDiagnostics.mockReturnValue({ operation: `/private?key=${token}`, gatewayCode: Infinity,

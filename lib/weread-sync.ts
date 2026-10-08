@@ -7,7 +7,8 @@ import {
 import type { ReadingNotebook, WeReadClient } from "./weread";
 
 export const WEREAD_SYNC_LIMITS = { notebookBooks: 1_000, notes: 10_000 } as const;
-const PAGE_SIZE = 20;
+const NOTEBOOK_PAGE_SIZE = 20;
+const THOUGHT_PAGE_SIZE = 100;
 // Every continuing page must add at least one unique item; the content limit is the real bound.
 const MAX_PAGES = WEREAD_SYNC_LIMITS.notes + 1;
 
@@ -20,6 +21,7 @@ export const WEREAD_SYNC_REASONS = [
   "notebook_total_shortfall", "note_book_mismatch", "duplicate_note_ids", "highlight_count_mismatch",
   "thought_page_limit", "thought_total_changed", "thought_empty_continuation",
   "thought_cursor_missing", "thought_cursor_repeated", "thought_total_shortfall",
+  "thought_total_zero_with_content", "thought_total_excess",
   "thought_notebook_count_mismatch", "library_schema_invalid",
 ] as const;
 export type WeReadSyncReason = (typeof WEREAD_SYNC_REASONS)[number];
@@ -125,7 +127,7 @@ export async function fetchWeReadLibrary(client: WeReadSyncClient, options: WeRe
     let expectedNotebookCount: number | undefined;
     for (;;) {
       if (++notebookPages > MAX_PAGES) return paginationError("notebook_page_limit");
-      const page = normalizeNotebooks(await client.notebooks(PAGE_SIZE, lastSort));
+      const page = normalizeNotebooks(await client.notebooks(NOTEBOOK_PAGE_SIZE, lastSort));
       if (page.totalBookCount !== undefined && page.totalBookCount > WEREAD_SYNC_LIMITS.notebookBooks) return booksLimit();
       if (page.totalBookCount !== undefined) {
         if (expectedNotebookCount !== undefined && expectedNotebookCount !== page.totalBookCount) return invalidData("notebook_total_changed");
@@ -171,13 +173,13 @@ export async function fetchWeReadLibrary(client: WeReadSyncClient, options: WeRe
       }
       if (notebook.thoughtCount !== 0) {
         const thoughtCursors = new Set<number>([0]);
-        let synckey: number | undefined;
+        let synckey = 0;
         let thoughtPages = 0;
         let thoughtCount = 0;
         let expectedThoughtCount: number | undefined;
         for (;;) {
           if (++thoughtPages > MAX_PAGES) return paginationError("thought_page_limit");
-          const page = normalizeThoughts(await client.thoughts(bookId, { count: PAGE_SIZE, ...(synckey === undefined ? {} : { synckey }) }), bookId);
+          const page = normalizeThoughts(await client.thoughts(bookId, { count: THOUGHT_PAGE_SIZE, synckey }), bookId);
           if (page.totalCount !== undefined && page.totalCount > WEREAD_SYNC_LIMITS.notes) return notesLimit();
           if (page.totalCount !== undefined) {
             if (expectedThoughtCount !== undefined && expectedThoughtCount !== page.totalCount) return invalidData("thought_total_changed");
@@ -192,7 +194,9 @@ export async function fetchWeReadLibrary(client: WeReadSyncClient, options: WeRe
           thoughtCursors.add(page.nextSynckey);
           synckey = page.nextSynckey;
         }
-        if (expectedThoughtCount !== undefined && thoughtCount !== expectedThoughtCount) return invalidData("thought_total_shortfall");
+        if (expectedThoughtCount === 0 && thoughtCount > 0) return invalidData("thought_total_zero_with_content");
+        if (expectedThoughtCount !== undefined && thoughtCount > expectedThoughtCount) return invalidData("thought_total_excess");
+        if (expectedThoughtCount !== undefined && thoughtCount < expectedThoughtCount) return invalidData("thought_total_shortfall");
         if (notebook.thoughtCount !== undefined && thoughtCount !== notebook.thoughtCount) return invalidData("thought_notebook_count_mismatch");
       }
       completed += 1;
