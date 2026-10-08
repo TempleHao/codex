@@ -6,13 +6,14 @@ import {
 } from "./weread";
 import type { ReadingNotebook, WeReadClient } from "./weread";
 
-export const WEREAD_SYNC_LIMITS = { notebookBooks: 80, notes: 10_000 } as const;
+export const WEREAD_SYNC_LIMITS = { notebookBooks: 1_000, notes: 10_000 } as const;
 const PAGE_SIZE = 20;
 // Every continuing page must add at least one unique item; the content limit is the real bound.
 const MAX_PAGES = WEREAD_SYNC_LIMITS.notes + 1;
 
 export class WeReadSyncError extends Error {
-  constructor(public readonly code: "LimitExceeded" | "PaginationError" | "InvalidData", message: string) {
+  constructor(public readonly code: "LimitExceeded" | "PaginationError" | "InvalidData", message: string,
+    public readonly limitKind?: "notebooks" | "notes") {
     super(message);
     this.name = "WeReadSyncError";
   }
@@ -40,10 +41,10 @@ function paginationError(): never {
   throw new WeReadSyncError("PaginationError", "微信读书的分页没有继续前进，已停止读取，未保存不完整结果。请稍后重试或改用 JSON 导入。");
 }
 function booksLimit(): never {
-  throw new WeReadSyncError("LimitExceeded", "本次临时连接最多读取 80 本有笔记的书。已停止读取，未保存不完整结果；可取消勾选笔记，仅获取书架和统计，或改用 JSON 导入。");
+  throw new WeReadSyncError("LimitExceeded", "本次同步最多读取 1000 本有笔记的书。已停止读取，未保存不完整结果；可先仅同步书架和统计，或改用 JSON 导入。", "notebooks");
 }
 function notesLimit(): never {
-  throw new WeReadSyncError("LimitExceeded", "本次临时连接最多读取 10000 条划线与想法。已停止读取，未保存不完整结果；可取消勾选笔记，仅获取书架和统计，或改用 JSON 导入。");
+  throw new WeReadSyncError("LimitExceeded", "本次同步最多读取 10000 条划线与想法。已停止读取，未保存不完整结果；可先仅同步书架和统计，或改用 JSON 导入。", "notes");
 }
 function record(value: unknown): Record<string, unknown> | null {
   return value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
@@ -145,31 +146,37 @@ export async function fetchWeReadLibrary(client: WeReadSyncClient, options: WeRe
       const bookId = notebook.book.id;
       report({ stage: "notes", message: `正在取回划线与想法（${completed + 1}/${notebooks.size}）…`, completed, total: notebooks.size });
       // /book/bookmarklist has no documented pagination parameters.
-      const highlights = normalizeHighlights(await client.highlights(bookId), bookId);
-      addNotes(highlights, bookId);
-      if (notebook.highlightCount !== undefined && highlights.length !== notebook.highlightCount) return invalidData();
-      const thoughtCursors = new Set<number>([0]);
-      let synckey: number | undefined;
-      let thoughtPages = 0;
-      let thoughtCount = 0;
-      let expectedThoughtCount: number | undefined;
-      for (;;) {
-        if (++thoughtPages > MAX_PAGES) return paginationError();
-        const page = normalizeThoughts(await client.thoughts(bookId, { count: PAGE_SIZE, ...(synckey === undefined ? {} : { synckey }) }), bookId);
-        if (page.totalCount !== undefined && page.totalCount > WEREAD_SYNC_LIMITS.notes) return notesLimit();
-        if (page.totalCount !== undefined) {
-          if (expectedThoughtCount !== undefined && expectedThoughtCount !== page.totalCount) return invalidData();
-          expectedThoughtCount = page.totalCount;
-        }
-        addNotes(page.highlights, bookId);
-        thoughtCount += page.highlights.length;
-        if (!page.hasMore) break;
-        if (!page.highlights.length || page.nextSynckey === undefined || thoughtCursors.has(page.nextSynckey)) return paginationError();
-        thoughtCursors.add(page.nextSynckey);
-        synckey = page.nextSynckey;
+      // The notebook's documented zero counts permit skipping an empty content
+      // request. Missing counts are unknown, so they must still be queried.
+      if (notebook.highlightCount !== 0) {
+        const highlights = normalizeHighlights(await client.highlights(bookId), bookId);
+        addNotes(highlights, bookId);
+        if (notebook.highlightCount !== undefined && highlights.length !== notebook.highlightCount) return invalidData();
       }
-      if ((expectedThoughtCount !== undefined && thoughtCount !== expectedThoughtCount)
-        || (notebook.thoughtCount !== undefined && thoughtCount !== notebook.thoughtCount)) return invalidData();
+      if (notebook.thoughtCount !== 0) {
+        const thoughtCursors = new Set<number>([0]);
+        let synckey: number | undefined;
+        let thoughtPages = 0;
+        let thoughtCount = 0;
+        let expectedThoughtCount: number | undefined;
+        for (;;) {
+          if (++thoughtPages > MAX_PAGES) return paginationError();
+          const page = normalizeThoughts(await client.thoughts(bookId, { count: PAGE_SIZE, ...(synckey === undefined ? {} : { synckey }) }), bookId);
+          if (page.totalCount !== undefined && page.totalCount > WEREAD_SYNC_LIMITS.notes) return notesLimit();
+          if (page.totalCount !== undefined) {
+            if (expectedThoughtCount !== undefined && expectedThoughtCount !== page.totalCount) return invalidData();
+            expectedThoughtCount = page.totalCount;
+          }
+          addNotes(page.highlights, bookId);
+          thoughtCount += page.highlights.length;
+          if (!page.hasMore) break;
+          if (!page.highlights.length || page.nextSynckey === undefined || thoughtCursors.has(page.nextSynckey)) return paginationError();
+          thoughtCursors.add(page.nextSynckey);
+          synckey = page.nextSynckey;
+        }
+        if ((expectedThoughtCount !== undefined && thoughtCount !== expectedThoughtCount)
+          || (notebook.thoughtCount !== undefined && thoughtCount !== notebook.thoughtCount)) return invalidData();
+      }
       completed += 1;
     }
   }

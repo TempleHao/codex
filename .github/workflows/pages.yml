@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       include_notes:
-        description: "Also sync highlights and thoughts (up to 80 notebook books)"
+        description: "Also sync highlights and thoughts (up to 1000 notebook books)"
         type: boolean
         default: false
       reset_history:

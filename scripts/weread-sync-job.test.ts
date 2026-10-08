@@ -202,6 +202,22 @@ describe("free GitHub WeRead encrypted synchronization job", () => {
     expect(await readStatus()).toEqual(result);
   });
 
+  it.each([
+    ["notebooks", "notebook_limit_exceeded"],
+    ["notes", "note_limit_exceeded"],
+  ] as const)("identifies a %s limit safely while preserving the prior encrypted snapshot", async (limitKind, expectedCode) => {
+    await writeFile(path.join(output, SYNC_FILENAME), JSON.stringify(oldEnvelope));
+    const deps = offlineDependencies();
+    deps.fetchLibrary.mockRejectedValue(new WeReadSyncError("LimitExceeded", `Private response detail ${token} ${library.books[0].title}`, limitKind));
+    const status = await runWeReadSyncJob(environment(), deps);
+    expect(status).toMatchObject({ state: "preserved", failureCode: expectedCode });
+    expect(await readCipher()).toEqual(oldEnvelope);
+    expect(await readStatus()).toEqual(status);
+    expect(deps.encrypt).not.toHaveBeenCalled();
+    expect(JSON.stringify(status)).not.toContain(token);
+    expect(JSON.stringify(status)).not.toContain(library.books[0].title);
+  });
+
   it("rejects oversized, corrupted or plaintext previous files rather than publishing them", async () => {
     for (const previousResponse of [
       new Response(JSON.stringify({ ...oldEnvelope, cipher: { ...oldEnvelope.cipher, iv: "malformed" } })),

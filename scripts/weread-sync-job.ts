@@ -131,7 +131,12 @@ function validConfiguration(env: Environment): boolean {
 function failureCode(error: unknown, lastHttpStatus?: number): FailureCode {
   if (error instanceof UpgradeRequired) return "upgrade_required";
   if (error instanceof WeReadSyncError) {
-    return error.code === "LimitExceeded" ? "limit_exceeded" : "invalid_data";
+    if (error.code === "LimitExceeded") {
+      if (error.limitKind === "notebooks") return "notebook_limit_exceeded";
+      if (error.limitKind === "notes") return "note_limit_exceeded";
+      return "limit_exceeded";
+    }
+    return "invalid_data";
   }
   if (error instanceof WeReadError) {
     if (error.code === "NetworkError" || error.code === "Timeout") return "network_error";

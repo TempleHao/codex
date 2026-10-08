@@ -41,6 +41,8 @@ function statusExplanation(status: ReadingSyncStatus): string {
     upgrade_required: "微信读书接口要求更新接入版本。",
     invalid_data: "本次取回的资料格式无法确认，已停止更新。",
     limit_exceeded: "本次资料超出同步容量，已停止更新。",
+    notebook_limit_exceeded: "有笔记的书超过 1000 本同步上限，可以先在 GitHub 手动更新时取消勾选笔记，读取书架与统计。",
+    note_limit_exceeded: "可导出的划线与想法超过 10000 条同步上限，可以先在 GitHub 手动更新时取消勾选笔记，读取书架与统计。",
     read_failed: "本次资料未能完整读取，稍后可以重新运行。",
     previous_decryption_failed: "请确认 GitHub 中的口令与上一份资料一致；修改口令需要重新设置同步。",
   };

@@ -160,17 +160,67 @@ describe("temporary WeRead synchronization (offline gateway mocks)", () => {
     }
   });
 
-  it("reports the book limit before reading any note contents", async () => {
+  it("fully reads more than 80 notebook books across all pages", async () => {
+    const entries = Array.from({ length: 81 }, (_, index) => notebook(index === 0 ? "a" : `book-${index}`, 1_000 - index, { reviewCount: 0 }));
+    const { client, bodies } = mocked(body => {
+      if (body.api_name === "/user/notebooks") {
+        const start = body.lastSort === undefined ? 0 : 1_001 - Number(body.lastSort);
+        return { totalBookCount: 81, books: entries.slice(start, start + 20), hasMore: start + 20 < entries.length ? 1 : 0 };
+      }
+      if (body.api_name === "/book/bookmarklist") return { updated: [highlight(`h-${body.bookId}`, String(body.bookId))] };
+      return basic(body);
+    });
+    const result = await fetchWeReadLibrary(client, { now });
+    expect(result.books).toHaveLength(81);
+    expect(result.highlights).toHaveLength(81);
+    expect(bodies.filter(body => body.api_name === "/user/notebooks")).toHaveLength(5);
+    expect(bodies.filter(body => body.api_name === "/book/bookmarklist")).toHaveLength(81);
+    expect(bodies.some(body => body.api_name === "/review/list/mine")).toBe(false);
+  });
+
+  it("reports the 1000-book limit before reading any note contents", async () => {
     const { client, bodies } = mocked(body => body.api_name === "/user/notebooks"
-      ? { totalBookCount: 81, books: [notebook("a")], hasMore: 0 } : basic(body));
-    await expect(fetchWeReadLibrary(client, { now })).rejects.toThrow("80 本");
+      ? { totalBookCount: 1_001, books: [notebook("a")], hasMore: 0 } : basic(body));
+    await expect(fetchWeReadLibrary(client, { now })).rejects.toMatchObject({ code: "LimitExceeded", limitKind: "notebooks" });
     expect(bodies.some(body => body.api_name === "/book/bookmarklist")).toBe(false);
+  });
+
+  it("enforces the actual 1000-book limit when notebook total counts are unknown", async () => {
+    const entries = Array.from({ length: 1_001 }, (_, index) => notebook(`book-${index}`, 1_500 - index, { noteCount: 0, reviewCount: 0 }));
+    const { client, bodies } = mocked(body => {
+      if (body.api_name === "/user/notebooks") {
+        const start = body.lastSort === undefined ? 0 : 1_501 - Number(body.lastSort);
+        return { books: entries.slice(start, start + 20), hasMore: start + 20 < entries.length ? 1 : 0 };
+      }
+      return basic(body);
+    });
+    await expect(fetchWeReadLibrary(client, { now })).rejects.toMatchObject({ code: "LimitExceeded", limitKind: "notebooks" });
+    expect(bodies.filter(body => body.api_name === "/user/notebooks")).toHaveLength(51);
+    expect(bodies.some(body => body.api_name === "/book/bookmarklist" || body.api_name === "/review/list/mine")).toBe(false);
+  });
+
+  it("skips only content categories with a known zero count and still reads unknown counts", async () => {
+    const { client, bodies } = mocked(body => {
+      if (body.api_name === "/user/notebooks") return { books: [
+        notebook("a", 40, { noteCount: 0, reviewCount: 0, bookmarkCount: 1 }),
+        notebook("thought-only", 30, { noteCount: 0 }),
+        notebook("highlight-only", 20, { reviewCount: 0 }),
+        notebook("unknown-counts", 10, { noteCount: undefined, reviewCount: undefined }),
+      ], hasMore: 0 };
+      if (body.api_name === "/book/bookmarklist") return { updated: [highlight(`h-${body.bookId}`, String(body.bookId))] };
+      if (body.api_name === "/review/list/mine") return { reviews: [thought(`t-${body.bookid}`)], hasMore: 0, totalCount: 1 };
+      return basic(body);
+    });
+    const result = await fetchWeReadLibrary(client, { now });
+    expect(result.highlights).toHaveLength(4);
+    expect(bodies.filter(body => body.api_name === "/book/bookmarklist").map(body => body.bookId)).toEqual(["highlight-only", "unknown-counts"]);
+    expect(bodies.filter(body => body.api_name === "/review/list/mine").map(body => body.bookid)).toEqual(["thought-only", "unknown-counts"]);
   });
 
   it("limits exportable notes without mistaking bookmark counts for exportable content", async () => {
     const { client, bodies } = mocked(body => body.api_name === "/user/notebooks"
       ? { books: [notebook("a", 10, { noteCount: 10_001, reviewCount: 0, bookmarkCount: 0 })], hasMore: 0 } : basic(body));
-    await expect(fetchWeReadLibrary(client, { now })).rejects.toThrow("10000 条");
+    await expect(fetchWeReadLibrary(client, { now })).rejects.toMatchObject({ code: "LimitExceeded", limitKind: "notes" });
     expect(bodies.some(body => body.api_name === "/book/bookmarklist")).toBe(false);
     const bookmarksOnly = mocked(body => {
       if (body.api_name === "/user/notebooks") return { books: [notebook("a", 10, { noteCount: 0, reviewCount: 0, bookmarkCount: 20_000 })], hasMore: 0 };
@@ -187,7 +237,7 @@ describe("temporary WeRead synchronization (offline gateway mocks)", () => {
       if (body.api_name === "/book/bookmarklist") return { updated: Array.from({ length: 10_001 }, (_, index) => highlight(`h-${index}`, "a")) };
       return basic(body);
     });
-    await expect(fetchWeReadLibrary(client, { now })).rejects.toMatchObject({ code: "LimitExceeded" });
+    await expect(fetchWeReadLibrary(client, { now })).rejects.toMatchObject({ code: "LimitExceeded", limitKind: "notes" });
   });
 
   it("discards partial data after a request failure or notes belonging to another book", async () => {

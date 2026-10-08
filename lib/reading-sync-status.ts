@@ -8,6 +8,7 @@ export const readingSyncStatusSchema = z.object({
   failureCode: z.enum([
     "configuration_missing", "invalid_configuration", "authorization_failed",
     "network_error", "upgrade_required", "invalid_data", "limit_exceeded",
+    "notebook_limit_exceeded", "note_limit_exceeded",
     "read_failed", "previous_decryption_failed",
   ]).optional(),
 }).strict();

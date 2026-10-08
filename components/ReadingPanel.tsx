@@ -223,7 +223,7 @@ export default function ReadingPanel({ library, onLibraryChange, onCreateTask, o
     <div className="reading-feedback" aria-live="polite">{message && <p className="reading-success">{message}<button type="button" onClick={() => setMessage("")} aria-label="关闭提示"><ReadingIcon name="close" size={15}/></button></p>}</div>
     {error && <p className="reading-error" role="alert">{error}<button type="button" onClick={() => setError("")} aria-label="关闭错误提示"><ReadingIcon name="close" size={15}/></button></p>}
     <div className="reading-overview">
-      <div className="reading-stat"><span>书架上的书<small>在读 {readingCount} 本</small></span><strong>{library.books.length}<small>本</small></strong></div>
+      <div className="reading-stat"><span>已收录的阅读条目<small>在读 {readingCount} 本</small></span><strong>{library.books.length}<small>项</small></strong></div>
       <div className="reading-stat"><span>阅读时长<small>{library.stats ? `${MODE_LABELS[library.stats.mode]} · 来自已导入统计` : "导入统计后显示"}</small></span><strong className="reading-duration">{library.stats ? formatReadingSeconds(library.stats.totalSeconds) : "—"}</strong></div>
       <div className="reading-stat"><span>阅读日数<small>{library.stats?.readingDays !== undefined ? `${MODE_LABELS[library.stats.mode]} · 来自已导入统计` : "导入统计后显示"}</small></span><strong>{library.stats?.readingDays ?? "—"}<small>天</small></strong></div>
       <div className="reading-stat"><span>已经读完<small>每读完一本，留下一个回响</small></span><strong>{finishedCount}<small>本</small></strong></div>
