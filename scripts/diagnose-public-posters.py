@@ -1,6 +1,7 @@
 """Probe only public, fixed Trakt samples. Never reads app/account credentials."""
 import json
 import re
+import socket
 import urllib.error
 import urllib.request
 
@@ -23,14 +24,23 @@ def probe(url, headers=None):
             }
     except urllib.error.HTTPError as error:
         return {"status": error.code, "contentType": error.headers.get("Content-Type")}
+    except urllib.error.URLError as error:
+        return {"failure": type(error).__name__, "reason": type(error.reason).__name__, "detail": str(error.reason)[:200]}
     except Exception as error:
-        return {"failure": type(error).__name__}
+        return {"failure": type(error).__name__, "detail": str(error)[:200]}
 
 
 result = {"documentedSample": {
     "cacheDownload": probe(SAMPLE),
     "corsDownload": probe(SAMPLE, {"Origin": ORIGIN}),
 }}
+result["dns"] = {}
+for host in ["walter-r2.trakt.tv", "walter.trakt.tv"]:
+    try:
+        socket.getaddrinfo(host, 443)
+        result["dns"][host] = {"resolved": True}
+    except socket.gaierror as error:
+        result["dns"][host] = {"resolved": False, "detail": str(error)}
 # The public title page may reveal a current poster when the guide sample is old.
 try:
     with urllib.request.urlopen("https://trakt.tv/movies/inception-2010", timeout=20) as response:
