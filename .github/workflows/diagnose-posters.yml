@@ -1,0 +1,16 @@
+name: Diagnose public Trakt posters
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check public CDN responses without account credentials
+        run: python3 scripts/diagnose-public-posters.py
