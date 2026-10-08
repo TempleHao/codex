@@ -9,8 +9,18 @@ permissions:
 jobs:
   diagnose:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 8
     steps:
       - uses: actions/checkout@v4
       - name: Check public CDN responses without account credentials
         run: python3 scripts/diagnose-public-posters.py
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+      - name: Install locked dependencies
+        run: npm ci --ignore-scripts
+      - name: Build static application
+        run: LIFE_BASE_PATH=/codex npm run build:preview
+      - name: Load a real public poster in the browser and verify cache reuse
+        run: node scripts/check-public-poster-browser.mjs

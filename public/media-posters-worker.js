@@ -1,4 +1,4 @@
-/* Cache only public, documented Trakt images. Opaque responses remain unreadable to JavaScript. */
+/* Cache only public, documented poster endpoints. Opaque responses remain unreadable to JavaScript. */
 const CACHE_NAME = "life-workbench-public-posters-opaque-v1";
 const endpoint = new URL("media-poster-cache", self.registration.scope);
 const pending = new Map();
@@ -15,6 +15,7 @@ function serialize(work) {
 }
 function normalize(value) {
   if (typeof value !== "string" || value.length > 2000 || /[\u0000-\u0020\u007f]/u.test(value)) return;
+  if (/^https:\/\/images\.metahub\.space\/poster\/medium\/tt\d{5,12}\/img$/.test(value)) return value;
   try {
     const url = new URL(value.startsWith("walter-r2.trakt.tv/") ? `https://${value}` : value);
     if (url.protocol !== "https:" || url.hostname !== "walter-r2.trakt.tv" || url.username || url.password || url.port || url.search || url.hash) return;
@@ -86,7 +87,9 @@ self.addEventListener("fetch", event => {
 });
 self.addEventListener("message", event => {
   const data = event.data;
-  if (!event.source || new URL(event.source.url).origin !== endpoint.origin || !data || !["clear", "delete"].includes(data.type)) return;
+  if (!event.source || new URL(event.source.url).origin !== endpoint.origin || !data) return;
+  if (data.type === "version") { event.ports[0]?.postMessage({ version: 2 }); return; }
+  if (!["clear", "delete"].includes(data.type)) return;
   const url = data.type === "delete" ? normalize(data.url) : undefined;
   if (data.type === "delete" && !url) return;
   if (data.type === "clear") {

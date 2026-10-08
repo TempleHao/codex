@@ -29,9 +29,19 @@ export function isSafeTraktLink(value: string): boolean {
   } catch { return false; }
 }
 
-/** Trakt's image API returns scheme-less WebP URLs on this documented CDN. */
+export function imdbPoster(id: unknown): string | undefined {
+  return typeof id === "string" && /^tt\d{5,12}$/.test(id) ? `https://images.metahub.space/poster/medium/${id}/img` : undefined;
+}
+
+export function isLegacyTraktPoster(value: unknown): boolean {
+  const poster = normalizeMediaPoster(value);
+  return poster !== undefined && new URL(poster).hostname === "walter-r2.trakt.tv";
+}
+
+/** Preserve imported Trakt URLs and allow only the documented IMDb poster endpoint. */
 export function normalizeMediaPoster(value: unknown): string | undefined {
   if (typeof value !== "string" || value.length > 2_000 || /[\u0000-\u0020\u007f]/u.test(value)) return;
+  if (/^https:\/\/images\.metahub\.space\/poster\/medium\/tt\d{5,12}\/img$/.test(value)) return value;
   try {
     const url = new URL(value.startsWith("walter-r2.trakt.tv/") ? `https://${value}` : value);
     if (url.protocol !== "https:" || url.hostname !== "walter-r2.trakt.tv" || url.username || url.password || url.port || url.search || url.hash) return;
@@ -57,8 +67,9 @@ export const mediaEntrySchema = z.object({
   // A watched status is not a dated viewing. Counts come only from these supplied events.
   history: z.array(mediaHistorySchema).max(5_000),
   traktId: z.number().int().positive().max(Number.MAX_SAFE_INTEGER).optional(),
+  imdbId: z.string().regex(/^tt\d{5,12}$/).optional(),
   traktUrl: z.string().max(2_000).refine(isSafeTraktLink, "Trakt 链接必须是官方 HTTPS 作品页面。").optional(),
-  poster: z.string().max(2_000).refine(value => normalizeMediaPoster(value) === value, "海报必须使用 Trakt 官方 HTTPS 图片地址。").optional(),
+  poster: z.string().max(2_000).refine(value => normalizeMediaPoster(value) === value, "海报必须使用支持的 HTTPS 图片地址。").optional(),
   showId: idSchema.optional(),
   season: z.number().int().min(0).max(1_000).optional(),
   episode: z.number().int().min(1).max(10_000).optional(),

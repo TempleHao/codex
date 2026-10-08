@@ -11,14 +11,30 @@ function ensureWorker(): Promise<ServiceWorker> {
     const script = new URL(`${scope}media-posters-worker.js`, location.origin).href;
     const expectedScope = new URL(scope, location.origin).href;
     let registration: ServiceWorkerRegistration | undefined;
+    const probes = new Map<ServiceWorker, MessagePort>();
     const ownedController = () => {
       const controller = navigator.serviceWorker.controller;
       return controller?.scriptURL === script ? controller : undefined;
     };
-    const cleanup = () => { clearTimeout(timeout); navigator.serviceWorker.removeEventListener("controllerchange", changed); };
+    const cleanup = () => {
+      clearTimeout(timeout);
+      navigator.serviceWorker.removeEventListener("controllerchange", changed);
+      for (const port of probes.values()) port.close();
+      probes.clear();
+    };
     const changed = () => {
       const worker = ownedController();
-      if (worker && registration?.active?.scriptURL === script) { cleanup(); resolve(worker); }
+      if (!worker || registration?.active?.scriptURL !== script || probes.has(worker)) return;
+      // An old controller shares this script URL but cannot serve the new poster host.
+      // Wait for the updated controller to acknowledge the supported protocol.
+      const channel = new MessageChannel();
+      probes.set(worker, channel.port1);
+      channel.port1.onmessage = event => {
+        if (event.data?.version !== 2 || ownedController() !== worker) return;
+        cleanup(); resolve(worker);
+      };
+      try { worker.postMessage({ type: "version" }, [channel.port2]); }
+      catch { channel.port1.close(); probes.delete(worker); }
     };
     const timeout = setTimeout(() => { cleanup(); reject(new Error("海报缓存启动超时")); }, 10000);
     navigator.serviceWorker.addEventListener("controllerchange", changed);

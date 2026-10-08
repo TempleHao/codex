@@ -113,7 +113,7 @@ export default function Home() {
   const restoreInput = useRef<HTMLInputElement>(null);
   const dialogRef = useRef<HTMLDivElement>(null);
 
-  const trakt = useTraktAutoSync({ ready: !loading && !loadFailed, onImport: mergeIncomingMedia });
+  const trakt = useTraktAutoSync({ ready: !loading && !loadFailed, library: life.media, onImport: mergeIncomingMedia, onArtwork: mergeIncomingPosters });
 
   async function load() {
     setLoading(true); setLoadFailed(false); setError("");
@@ -189,6 +189,17 @@ export default function Home() {
     try {
       const latest = await request<LifeData>("/api/life");
       const value = mergeMediaLibraries(latest.media, incoming);
+      const saved = await request<LifeData>("/api/life", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ section: "media", expected: latest.media, value }) });
+      setLife(saved);
+    } finally { lifeWorking.current = false; setLifeSaving(false); }
+  }
+  async function mergeIncomingPosters(posters: ReadonlyMap<string, string>) {
+    if (lifeWorking.current || restoring || clearing) throw new Error("正在保存资料，请稍后补图。旧记录保留。");
+    lifeWorking.current = true; setLifeSaving(true);
+    try {
+      const latest = await request<LifeData>("/api/life");
+      const value = { ...latest.media, entries: latest.media.entries.map(entry => posters.has(entry.id) ? { ...entry, poster: posters.get(entry.id)! } : entry) };
+      if (JSON.stringify(value) === JSON.stringify(latest.media)) return;
       const saved = await request<LifeData>("/api/life", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ section: "media", expected: latest.media, value }) });
       setLife(saved);
     } finally { lifeWorking.current = false; setLifeSaving(false); }

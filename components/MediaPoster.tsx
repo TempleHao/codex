@@ -11,6 +11,8 @@ export function MediaPoster({ url, title, kind }: { url?: string; title: string;
   const [corsFailedUrl, setCorsFailedUrl] = useState<string>();
   const [image, setImage] = useState<{ url: string; src: string }>();
   const [failedUrl, setFailedUrl] = useState<string>();
+  const [failureStage, setFailureStage] = useState<"cache-unavailable" | "decode-failed">();
+  const [loadedSource, setLoadedSource] = useState<string>();
   useEffect(() => {
     if (!element.current) return;
     if (typeof IntersectionObserver === "undefined") { setNearby(true); return; }
@@ -40,14 +42,15 @@ export function MediaPoster({ url, title, kind }: { url?: string; title: string;
     let disposed = false;
     void loadPosterWorkerSource(url).then(src => {
       if (!disposed) { setImage({ url, src }); setFailedUrl(undefined); }
-    }).catch(() => { if (!disposed) setFailedUrl(url); });
+    }).catch(() => { if (!disposed) { setFailedUrl(url); setFailureStage("cache-unavailable"); } });
     return () => { disposed = true; };
   }, [url, corsFailedUrl, nearby]);
   const src = image && image.url === url ? image.src : undefined;
   const failed = Boolean(url && failedUrl === url);
+  const state = !url ? "missing" : failed ? failureStage ?? "decode-failed" : src && loadedSource === src ? "loaded" : "loading";
   return (
-    <span ref={element} className={`media-title-art media-art-${kind}`} data-poster-failed={failed ? url : undefined}>
-      {src && !failed ? <img src={src} alt={`${title}海报`} onError={() => setFailedUrl(url)} /> : <>
+    <span ref={element} className={`media-title-art media-art-${kind}`} data-poster-failed={failed ? url : undefined} data-poster-state={state} data-poster-route={src?.startsWith("blob:") ? "blob" : src ? "worker" : undefined}>
+      {src && !failed ? <img src={src} alt={`${title}海报`} onLoad={() => setLoadedSource(src)} onError={() => { setFailedUrl(url); setFailureStage("decode-failed"); }} /> : <>
         <span>{Array.from(title.trim())[0] ?? "影"}</span>
         <small>{failed ? "海报加载失败" : kind === "movie" ? "电影" : kind === "show" ? "剧集" : "单集"}</small>
       </>}

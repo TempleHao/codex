@@ -2,12 +2,13 @@
 
 import { useEffect, useRef, useState } from "react";
 import { APP_BASE_PATH } from "@/lib/client";
-import { clearTraktAuthorizationContext, completeTraktSessionAuthorization, createTraktAuthorization, fetchTraktLibrary, saveTraktAuthorizationContext, TraktError, type TraktSession } from "@/lib/trakt";
+import { clearTraktAuthorizationContext, completeTraktSessionAuthorization, createTraktAuthorization, fetchTraktLibrary, fetchTraktArtwork, saveTraktAuthorizationContext, TraktError, type TraktSession, type TraktArtworkProgress } from "@/lib/trakt";
 import { traktConnection } from "@/lib/trakt-connection";
 import type { MediaLibrary } from "@/lib/media";
+import { isLegacyTraktPoster } from "@/lib/media";
 
 const PUBLIC_CLIENT_ID_KEY = "life-workbench:trakt-client-id";
-export function useTraktAutoSync({ ready, onImport }: { ready: boolean; onImport: (library: MediaLibrary) => Promise<void> }) {
+export function useTraktAutoSync({ ready, library, onImport, onArtwork }: { ready: boolean; library: MediaLibrary; onImport: (library: MediaLibrary) => Promise<void>; onArtwork: (posters: ReadonlyMap<string, string>) => Promise<void> }) {
   const [clientId, setClientId] = useState("");
   const [redirectUri, setRedirectUri] = useState("");
   const [origin, setOrigin] = useState("");
@@ -17,6 +18,7 @@ export function useTraktAutoSync({ ready, onImport }: { ready: boolean; onImport
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
   const [preview, setPreview] = useState<MediaLibrary | null>(null);
+  const [artwork, setArtwork] = useState<TraktArtworkProgress | null>(null);
   const pendingSession = useRef<TraktSession | null>(null);
   const controllerRef = useRef<AbortController | null>(null);
   const busyRef = useRef(false);
@@ -24,6 +26,17 @@ export function useTraktAutoSync({ ready, onImport }: { ready: boolean; onImport
   const generation = useRef(0);
   const importer = useRef(onImport);
   importer.current = onImport;
+  const media = useRef(library);
+  media.current = library;
+  const artworkImporter = useRef(onArtwork);
+  artworkImporter.current = onArtwork;
+  function artworkOptions(controller: AbortController) {
+    return {
+      signal: controller.signal,
+      knownPosters: new Map(media.current.entries.filter(entry => entry.poster).map(entry => [entry.id, entry.poster!])),
+      onArtworkProgress: (progress: TraktArtworkProgress) => { if (mounted.current && !controller.signal.aborted) setArtwork(progress); },
+    };
+  }
 
   function begin() {
     const controller = new AbortController();
@@ -42,12 +55,12 @@ export function useTraktAutoSync({ ready, onImport }: { ready: boolean; onImport
     setError(cause instanceof TraktError ? cause.message : "更新没有完成，已有影音记录仍然保留。可稍后重试。");
   }
   async function readLibrary(session: TraktSession, controller: AbortController, allowRefresh: boolean) {
-    try { return { library: await fetchTraktLibrary(session.accessToken, session.clientId, { signal: controller.signal }), session }; }
+    try { return { library: await fetchTraktLibrary(session.accessToken, session.clientId, artworkOptions(controller)), session }; }
     catch (cause) {
       if (!allowRefresh || !(cause instanceof TraktError) || cause.code !== "unauthorized") throw cause;
       const fresh = await traktConnection.getValidSession({ forceRefresh: true, rejectedAccessToken: session.accessToken, signal: controller.signal });
       if (!fresh) throw new TraktError("Trakt 连接已断开，请重新连接。", "reauthorization");
-      return { library: await fetchTraktLibrary(fresh.accessToken, fresh.clientId, { signal: controller.signal }), session: fresh };
+      return { library: await fetchTraktLibrary(fresh.accessToken, fresh.clientId, artworkOptions(controller)), session: fresh };
     }
   }
   async function refresh() {
@@ -66,6 +79,23 @@ export function useTraktAutoSync({ ready, onImport }: { ready: boolean; onImport
       await traktConnection.markSynced(syncedAt, result.session.accessToken);
       if (!controller.signal.aborted && mounted.current) { setLastSynced(syncedAt); setMessage("影音已自动更新，原有感想和观看记录已保留。"); }
     } catch (cause) { report(cause, controller); if (!controller.signal.aborted) setMessage(""); }
+    finally { finish(controller); }
+  }
+  async function repairArtwork(publicClientId = clientId.trim()) {
+    if (busyRef.current || !ready) return;
+    if (!publicClientId) { setError("请先填写公开 Trakt Client ID，或连接 Trakt，再补齐海报。补图不需要授权码或密钥。"); return; }
+    const controller = begin();
+    setMessage("正在从作品详情补齐海报地址…");
+    try {
+      sessionStorage.setItem(PUBLIC_CLIENT_ID_KEY, publicClientId);
+      const snapshot = media.current;
+      const result = await fetchTraktArtwork(snapshot, publicClientId, undefined, artworkOptions(controller));
+      if (controller.signal.aborted) return;
+      const before = new Map(snapshot.entries.map(entry => [entry.id, entry.poster]));
+      const posters = new Map(result.entries.filter(entry => entry.poster && before.get(entry.id) !== entry.poster).map(entry => [entry.id, entry.poster!]));
+      if (posters.size) await artworkImporter.current(posters);
+      if (mounted.current && !controller.signal.aborted) setMessage(posters.size ? `已补齐 ${posters.size} 个海报地址，观看记录与感想保留。` : "海报地址检查完成，可在片单中查看加载结果。");
+    } catch (cause) { report(cause, controller); }
     finally { finish(controller); }
   }
   useEffect(() => {
@@ -101,7 +131,12 @@ export function useTraktAutoSync({ ready, onImport }: { ready: boolean; onImport
         void (async () => {
           try {
             const record = await traktConnection.read();
-            if (disposed || !mounted.current || !record) return;
+            if (disposed || !mounted.current) return;
+            if (!record) {
+              const publicClientId = sessionStorage.getItem(PUBLIC_CLIENT_ID_KEY);
+              if (publicClientId && media.current.entries.some(entry => entry.traktId && (!entry.poster || isLegacyTraktPoster(entry.poster)))) await repairArtwork(publicClientId);
+              return;
+            }
             setConnected(true); setClientId(record.session.clientId); setLastSynced(record.syncedAt);
             await refresh();
           } catch (cause) { if (!disposed) report(cause); }
@@ -156,10 +191,11 @@ export function useTraktAutoSync({ ready, onImport }: { ready: boolean; onImport
     cancel();
     try {
       await traktConnection.disconnect();
+      try { sessionStorage.removeItem(PUBLIC_CLIENT_ID_KEY); } catch { /* Connection itself has been removed. */ }
       if (mounted.current) { setConnected(false); setLastSynced(null); setMessage("Trakt 连接已从此浏览器移除，影音记录保留。"); }
     } catch (cause) { report(cause); throw cause; }
   }
   function discard() { pendingSession.current = null; setPreview(null); setMessage(""); }
-  return { clientId, setClientId, redirectUri, origin, busy, connected, lastSynced, error, message, preview, connect, cancel, save, refresh, disconnect, discard };
+  return { clientId, setClientId, redirectUri, origin, busy, connected, lastSynced, error, message, preview, artwork, connect, cancel, save, refresh, repairArtwork, disconnect, discard };
 }
 export type TraktController = ReturnType<typeof useTraktAutoSync>;

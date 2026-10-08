@@ -3,6 +3,7 @@ import { normalizeMediaPoster } from "./media";
 export const MAX_POSTER_BYTES = 2 * 1024 * 1024;
 const MAX_CACHE_ENTRIES = 100;
 const REQUEST_TIMEOUT_MS = 15_000;
+const IMAGE_TYPES = new Set(["image/webp", "image/jpeg", "image/png"]);
 
 export interface MediaPosterCache {
   get(url: string): Promise<Blob | undefined>;
@@ -80,7 +81,7 @@ function browserPosterCache(): MediaPosterCache {
 }
 
 function validBlob(blob: Blob): boolean {
-  return blob.type.toLowerCase() === "image/webp" && blob.size > 0 && blob.size <= MAX_POSTER_BYTES;
+  return IMAGE_TYPES.has(blob.type.toLowerCase()) && blob.size > 0 && blob.size <= MAX_POSTER_BYTES;
 }
 
 export function createMediaPosterLoader(options: {
@@ -117,7 +118,8 @@ export function createMediaPosterLoader(options: {
         redirect: "error", signal: controller.signal,
       });
       if (!response.ok || response.type === "opaque") throw new Error("海报下载失败");
-      if (response.headers.get("content-type")?.split(";")[0].trim().toLowerCase() !== "image/webp") {
+      const imageType = response.headers.get("content-type")?.split(";")[0].trim().toLowerCase() ?? "";
+      if (!IMAGE_TYPES.has(imageType)) {
         throw new Error("海报格式不正确");
       }
       const length = Number(response.headers.get("content-length"));
@@ -136,7 +138,7 @@ export function createMediaPosterLoader(options: {
         }
       } catch (error) { void reader.cancel().catch(() => {}); throw error; }
       finally { reader.releaseLock(); }
-      const blob = new Blob(parts, { type: "image/webp" });
+      const blob = new Blob(parts, { type: imageType });
       if (!validBlob(blob)) throw new Error("海报内容无效");
       return blob;
     } finally { clearTimeout(timeout); controllers.delete(controller); controller.abort(); }

@@ -26,8 +26,19 @@
 - 观看日期按中国时区展示。同一观看事件编号去重；编号对应日期冲突时整次合并失败。
 - 相同作品合并历史，保留原感想及其他片单内容。新资料没有确定观看状态时，保留已有手动分类。
 - 使用 Trakt 返回的作品标题；未提供的中文译名不猜测。常见类型标签有固定中文映射。
-- Trakt 海报 CDN 的官方条款要求应用缓存，不能直接热链。海报地址随资料保存；浏览器通过 CORS 下载 WebP 图片，缓存到 IndexedDB 后用 Blob 地址展示，不把 CDN 地址直接放入图片元素。可读取的图片缓存最多 100 张、单张不超过 2 MB，并限制下载并发；缓存不可用时仍显示本次下载的图片。CDN 不允许 CORS 读取时，专用 Service Worker 以浏览器原生 `no-cors` 请求缓存公开图片，使用本站图片地址展示。该模式使用浏览器要求的 `redirect: follow`；仅允许官方 CDN 的初始图片地址，响应保持 opaque，JavaScript 无法检查最终跳转地址、状态或图片字节，请求不携带账号凭据。因此按最多 12 张限制容量，不宣称能检查文件大小。Worker 只处理图片请求，不缓存应用页面。完整备份包含海报来源地址，图片缓存可在新设备重新获取。
-- 旧片单此前未保存海报地址，可通过自动更新补充；旧版未保留连接的用户先重新授权并确认保存一次。单集未提供独立海报时使用所属剧集海报。缺图或本机网络不能读取时保留文字片卡；「重试失败海报」只重新获取失败项，不修改观看记录。清空浏览器资料也清除海报缓存。
+- 海报优先根据 Trakt 返回的 IMDb 编号使用公开 Metahub 封面（Stremio 官方示例所用图源），无须另一个 API Key，也不发送 Trakt 账号令牌。电影与剧集独立补图，单集继承父剧封面。
+- 列表中的作品信息可能是旧快照。缺少 IMDb 或只有旧 Walter 海报时，通过 `/movies/{id}?extended=full`、`/shows/{id}?extended=full` 补查；已有有效封面复用，不重复查详情。最多 3 个并发、每次最多 500 次详情请求；遇到限流或网络故障停止补查，保留观看资料。
+- 原有 Walter URL 和旧备份仍可读取。自动更新会迁移失效地址；旧片单没有持久授权但仍保留公开 Client ID 时，也会自动补图。点击「修复海报」可补地址并重新加载失败缓存，图片补丁只更新地址，不覆盖补图期间新写的评分、感想或观看记录。
+- 浏览器缓存可读取的 WebP、JPEG、PNG 图片，以 Blob 地址显示，最多 100 张、单张最多 2 MB。图片服务不允许 CORS 读取时，专用 Service Worker 使用原生 `no-cors`、无凭据请求缓存公开图片，再通过本站图片地址显示；响应保持 opaque，最多 12 张。该模式依照浏览器要求使用 `redirect: follow`，无法检查最终跳转地址或不透明内容大小。允许的初始地址仅为旧 Trakt CDN 路径及固定 Metahub IMDb 路径。Worker 不缓存应用页面。
+- 完整备份包含 IMDb 编号（已有时）与海报来源地址，不包含图片缓存或连接令牌。新设备重新获取图片；清空浏览器资料同时删除图片缓存。
+
+## 海报自检
+
+2026-10-08 的[独立 GitHub runner 检查](https://github.com/TempleHao/codex/actions/runs/37829362627)中，旧文档图片域名 `walter-r2.trakt.tv`、`walter.trakt.tv` 均未解析到地址。Metahub 公开示例返回 HTTP 200、107732 字节 JPEG，未允许 CORS。因此，只改跨域缓存或只重读个人列表不能覆盖这些故障；新版同时补详情、替换旧图源并保留不透明图片缓存。
+
+「检查海报」区分缺少地址、等待加载、已经显示、缓存不可用、图片响应未能显示，并显示作品详情查询结果。「复制海报诊断」只包含计数与浏览器能力，不包含片名、观看记录、作品编号、图片地址、Client ID 或账号令牌。
+
+仓库的 `Diagnose public Trakt posters` 手动工作流使用固定公开样例，检查 DNS、HTTP、真实浏览器显示、旧 Worker 升级及刷新缓存，不读取个人账号。新页面等待支持新图源的 Worker 确认就绪，避免旧控制器暂时拒绝海报。可以重新运行以区分图源变化和应用故障。
 
 ## 连接问题
 
@@ -37,4 +48,4 @@
 
 单元与浏览器测试使用虚构账户响应，验证授权校验、读取、确认保存、失败不覆盖与备份兼容；只有用户在自己配置的 Trakt 应用完成真实授权后，才可确认其网络及账号读取成功。
 
-协议依据：[官方 PKCE 指南](https://github.com/trakt/trakt-api/blob/master/projects/developer/src/lib/guides/pkce.md)、[官方 CORS 指南](https://github.com/trakt/trakt-api/blob/master/projects/developer/src/lib/guides/cors.md)、[官方 API 文档](https://trakt.docs.apiary.io/)。
+协议依据：[官方 PKCE 指南](https://github.com/trakt/trakt-api/blob/master/projects/developer/src/lib/guides/pkce.md)、[官方 CORS 指南](https://github.com/trakt/trakt-api/blob/master/projects/developer/src/lib/guides/cors.md)、[官方 API 文档](https://trakt.docs.apiary.io/)、[Trakt 缓存快照与详情补全](https://github.com/trakt/trakt-api/blob/master/projects/developer/src/lib/guides/caching-and-fresh-data.md)、[Stremio 官方公开封面示例](https://github.com/Stremio/addon-helloworld-express/blob/master/index.js)。

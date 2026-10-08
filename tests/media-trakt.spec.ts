@@ -13,6 +13,16 @@ const AUTHORIZATION_CODE = "test-only-authorization-code";
 const ACCESS_TOKEN = "test-only-access-token";
 const REFRESH_TOKEN = "test-only-refresh-token";
 const FAILED_POSTER_URL = "https://walter-r2.trakt.tv/images/movies/000/012/602/posters/thumb/failed.jpg.webp";
+const LEGACY_POSTER_URL = "https://walter-r2.trakt.tv/images/movies/000/012/601/posters/thumb/e0d9dd35c5.jpg.webp";
+const PUBLIC_POSTER_URL = "https://images.metahub.space/poster/medium/tt1375666/img";
+const MOCK_WEBP = Buffer.from("UklGRi4AAABXRUJQVlA4ICIAAABQAQCdASoCAAMAAUAmJQBOgC6gAP7wxASMNGvr1093/cAA", "base64");
+const SUMMARY_IMDB_IDS: Record<string, string> = {
+  "/movies/1": "tt1375666", "/movies/3": "tt0816692", "/movies/8": "tt0133093",
+  "/shows/4": "tt0903747", "/shows/5": "tt5753856",
+};
+const PUBLIC_SUMMARIES = new Set(Object.keys(SUMMARY_IMDB_IDS));
+const METAHUB_POSTER_URLS = new Set(Object.values(SUMMARY_IMDB_IDS).map(id => `https://images.metahub.space/poster/medium/${id}/img`));
+const isMockPosterUrl = (url: URL) => url.origin === "https://walter-r2.trakt.tv" || METAHUB_POSTER_URLS.has(url.href);
 const ENDPOINTS = [
   "/users/me/history/movies", "/users/me/history/episodes", "/users/me/ratings/movies",
   "/users/me/ratings/shows", "/users/me/watchlist/movies", "/users/me/watchlist/shows",
@@ -40,8 +50,8 @@ const test = base.extend<{ audit: void }>({
       if (!["http:", "https:"].includes(url.protocol)) return;
       const app = [APP_ORIGIN, LOCAL_ORIGIN].includes(url.origin);
       const auth = url.origin === "https://auth.trakt.tv" && ["/oauth/authorize", "/oauth/token"].includes(url.pathname);
-      const poster = url.origin === "https://walter-r2.trakt.tv" && request.resourceType() === "fetch";
-      const api = url.origin === "https://api.trakt.tv" && ENDPOINTS.some(path => path === url.pathname);
+      const poster = isMockPosterUrl(url) && request.resourceType() === "fetch";
+      const api = url.origin === "https://api.trakt.tv" && (ENDPOINTS.some(path => path === url.pathname) || PUBLIC_SUMMARIES.has(url.pathname));
       if ((!app && !auth && !api && !poster) || (app && /(?:^|\/)api(?:\/|$)/.test(url.pathname))) forbiddenRequests.push(`${request.method()} ${url.origin}${url.pathname}`);
     });
     page.on("pageerror", error => pageErrors.push(error.message));
@@ -49,10 +59,11 @@ const test = base.extend<{ audit: void }>({
       if (message.type() !== "error") return;
       // The failure case deliberately returns HTTP 500 from a mocked data endpoint.
       if (["https://api.trakt.tv/", "https://walter-r2.trakt.tv/"].some(origin => message.location().url.startsWith(origin)) && /Failed to load resource/.test(message.text())) return;
-      if (intentionalPosterFallback(message.location().url) && /Failed to load resource.*net::ERR_FAILED/.test(message.text())) return;
+      if (intentionalPosterFallback(message.location().url) && /Failed to load resource.*(?:net::ERR_FAILED|status of 500)/.test(message.text())) return;
       pageErrors.push(message.text());
     });
     page.on("response", response => {
+      if (METAHUB_POSTER_URLS.has(response.url()) && response.status() >= 400) assetFailures.push(`${response.status()} ${response.url()}`);
       if (new URL(response.url()).origin === "https://walter-r2.trakt.tv" && response.status() >= 400) rejectedPosters.add(response.url());
       if ([APP_ORIGIN, LOCAL_ORIGIN].includes(new URL(response.url()).origin) && response.status() >= 400 && !intentionalPosterFallback(response.url())) assetFailures.push(`${response.status()} ${response.url()}`);
     });
@@ -181,7 +192,7 @@ function traktDatasets(): Record<string, unknown[]> {
 }
 
 async function mockTrakt(page: Page) {
-  const result = { states: [] as string[], verifiers: [] as string[], challenges: [] as string[], tokenCalls: 0, refreshCalls: 0, accessToken: ACCESS_TOKEN, refreshToken: REFRESH_TOKEN, apiCalls: [] as string[], badState: false, failPath: "", rejectOncePath: "" };
+  const result = { states: [] as string[], verifiers: [] as string[], challenges: [] as string[], tokenCalls: 0, refreshCalls: 0, accessToken: ACCESS_TOKEN, refreshToken: REFRESH_TOKEN, apiCalls: [] as string[], summaryCalls: [] as string[], summaryAuthorizations: [] as (string | undefined)[], summaryGate: null as Promise<void> | null, badState: false, failPath: "", rejectOncePath: "" };
   const cors = {
     "Access-Control-Allow-Origin": APP_ORIGIN,
     "Access-Control-Allow-Headers": "Content-Type, Authorization, trakt-api-key, trakt-api-version",
@@ -237,11 +248,38 @@ async function mockTrakt(page: Page) {
       access_token: result.accessToken, refresh_token: result.refreshToken, token_type: "Bearer", created_at: Math.floor(Date.now() / 1_000), expires_in: 604_800,
     }) });
   });
+  await page.context().route(isMockPosterUrl, async route => {
+    const request = route.request();
+    expect(request.resourceType()).toBe("fetch");
+    expect(request.headers()["cookie"]).toBeUndefined();
+    expect(request.headers()["authorization"]).toBeUndefined();
+    expect(request.headers()["referer"]).toBeUndefined();
+    await route.fulfill({ status: 200, headers: { "Access-Control-Allow-Origin": request.headers()["origin"] ?? APP_ORIGIN }, contentType: "image/webp", body: MOCK_WEBP });
+  });
   const datasets = traktDatasets();
   await page.route("https://api.trakt.tv/**", async route => {
     const request = route.request();
     if (request.method() === "OPTIONS") { await route.fulfill({ status: 204, headers: cors }); return; }
     const url = new URL(request.url());
+    if (PUBLIC_SUMMARIES.has(url.pathname)) {
+      result.summaryCalls.push(url.pathname);
+      expect(request.method()).toBe("GET");
+      expect(url.searchParams.get("extended")).toBe("full");
+      expect([...url.searchParams.keys()]).toEqual(["extended"]);
+      const authorization = request.headers()["authorization"];
+      result.summaryAuthorizations.push(authorization);
+      if (authorization !== undefined) expect(authorization).toBe(`Bearer ${result.accessToken}`);
+      expect(request.headers()["trakt-api-key"]).toBe(CLIENT_ID);
+      expect(request.headers()["trakt-api-version"]).toBe("2");
+      expect(request.headers()["cookie"]).toBeUndefined();
+      expect(request.headers()["referer"]).toBeUndefined();
+      if (result.summaryGate) await result.summaryGate;
+      const id = Number(url.pathname.split("/").at(-1));
+      await route.fulfill({ status: 200, headers: cors, contentType: "application/json", body: JSON.stringify({
+        title: `Original summary ${id}`, year: 2025, ids: { trakt: id, imdb: SUMMARY_IMDB_IDS[url.pathname] }, images: { poster: [LEGACY_POSTER_URL] },
+      }) });
+      return;
+    }
     result.apiCalls.push(url.pathname);
     expect(ENDPOINTS.some(path => path === url.pathname)).toBe(true);
     expect(request.method()).toBe("GET");
@@ -275,6 +313,72 @@ async function authorize(page: Page) {
   await page.getByRole("textbox", { name: "Trakt Client ID", exact: true }).fill(CLIENT_ID);
   await page.getByRole("button", { name: "跳转 Trakt 授权", exact: true }).click();
 }
+
+test("旧片单凭公开 Client ID 修复海报，补图期间的新评分感想保留，下次打开自动补图且诊断不含个人资料", async ({ page, context }) => {
+  test.setTimeout(60_000);
+  const before = originalState();
+  before.life.media.entries[0].poster = LEGACY_POSTER_URL;
+  const trakt = await mockTrakt(page);
+  await openMedia(page, { https: true, seed: before });
+  let release!: () => void;
+  trakt.summaryGate = new Promise<void>(resolve => { release = resolve; });
+  await page.getByRole("textbox", { name: "Trakt Client ID", exact: true }).fill(CLIENT_ID);
+  await page.getByRole("button", { name: "修复海报", exact: true }).click();
+  await expect.poll(() => trakt.summaryCalls.length).toBe(1);
+  expect(trakt.summaryCalls).toEqual(["/movies/1"]);
+  expect(trakt.tokenCalls).toBe(0);
+  expect(trakt.apiCalls).toEqual([]);
+
+  // A delayed summary must patch the latest entry, not overwrite it with a stale copy.
+  await page.getByRole("button", { name: "编辑记录与感想", exact: true }).click();
+  const form = page.getByRole("form", { name: "影音记录表单", exact: true });
+  const thought = "补图期间新写下的感想仍属于我。";
+  await form.getByRole("spinbutton", { name: "我的评分", exact: true }).fill("9.5");
+  await form.getByRole("textbox", { name: "我的感想", exact: true }).fill(thought);
+  await form.getByRole("button", { name: "保存影音记录", exact: true }).click();
+  await expect(form).not.toBeVisible();
+  release(); trakt.summaryGate = null;
+  await expect.poll(async () => (await persisted(page))?.life.media.entries.find(entry => entry.id === "trakt:movie:1")?.poster).toBe(PUBLIC_POSTER_URL);
+  const patched = await persisted(page);
+  expect(patched?.life.media.entries.find(entry => entry.id === "trakt:movie:1")).toEqual({ ...before.life.media.entries[0], rating: 9.5, thought, poster: PUBLIC_POSTER_URL });
+  expect(patched?.life.reading).toEqual(before.life.reading);
+  expect(patched?.life.board).toEqual(before.life.board);
+  expect(patched?.life.thoughts).toEqual(before.life.thoughts);
+  expect(await connectionRecord(page)).toBeNull();
+  const card = page.locator(".media-title").filter({ hasText: "原来的片名" });
+  await card.scrollIntoViewIfNeeded();
+  await expect(card.locator("[data-poster-state=loaded]")).toHaveCount(1);
+  const image = card.locator("img");
+  await expect(image).toHaveAttribute("src", /^blob:/);
+  await expect.poll(() => image.evaluate(node => (node as HTMLImageElement).naturalWidth)).toBe(2);
+
+  await page.getByRole("button", { name: "检查海报", exact: true }).click();
+  await expect(page.locator(".media-poster-diagnostics")).toBeVisible();
+  await context.grantPermissions(["clipboard-read", "clipboard-write"], { origin: APP_ORIGIN });
+  await page.getByRole("button", { name: "复制海报诊断", exact: true }).click();
+  const diagnostic = await page.evaluate(() => navigator.clipboard.readText());
+  expect(diagnostic.length).toBeGreaterThan(0);
+  for (const privateValue of ["原来的片名", "自己记下的旧电影", "trakt:movie:1", "manual:kept-movie", PUBLIC_POSTER_URL, CLIENT_ID, ACCESS_TOKEN, REFRESH_TOKEN, thought]) expect(diagnostic).not.toContain(privateValue);
+  expect(diagnostic).not.toMatch(/https?:\/\//);
+
+  // Preserve the saved public configuration while simulating another old record without a poster.
+  await page.evaluate(key => {
+    const saved = JSON.parse(localStorage.getItem(key)!);
+    delete saved.life.media.entries.find((entry: { id: string }) => entry.id === "trakt:movie:1").poster;
+    localStorage.setItem(key, JSON.stringify(saved));
+  }, STORAGE_KEY);
+  const summaryCalls = trakt.summaryCalls.length;
+  await page.reload();
+  await expect(page.getByRole("button", { name: "导出备份", exact: true })).toBeEnabled();
+  await expect.poll(() => trakt.summaryCalls.length).toBe(summaryCalls + 1);
+  await expect.poll(async () => (await persisted(page))?.life.media.entries.find(entry => entry.id === "trakt:movie:1")?.poster).toBe(PUBLIC_POSTER_URL);
+  expect(trakt.tokenCalls).toBe(0);
+  expect(trakt.states).toEqual([]);
+  expect(trakt.summaryAuthorizations.every(value => value === undefined)).toBe(true);
+  expect(trakt.apiCalls).toEqual([]);
+  expect((await persisted(page))?.life.media.entries.find(entry => entry.id === "trakt:movie:1")).toMatchObject({ rating: 9.5, thought });
+  expect(await connectionRecord(page)).toBeNull();
+});
 
 test("手动电影保存本人评分和感想，只有实际观看日期形成足迹，人生记忆由明确操作留下", async ({ page }) => {
   await openMedia(page);
@@ -474,9 +578,28 @@ test("错误授权 state 不换令牌，后续接口失败不保存部分资料�
   expect(await rawStorage(page)).toBe(before);
   await expect(page.getByRole("button", { name: "保存到影音", exact: true })).toHaveCount(0);
   await expectAuthorizationCleared(page, [AUTHORIZATION_CODE, ACCESS_TOKEN, REFRESH_TOKEN, ...trakt.states, ...trakt.verifiers]);
+  const publicSummaryStart = trakt.summaryCalls.length;
+  const summaryAuthStart = trakt.summaryAuthorizations.length;
+  const listCallsBeforeReload = [...trakt.apiCalls];
+  const tokenCallsBeforeReload = trakt.tokenCalls;
   await page.reload();
   await expect(page.getByRole("button", { name: "导出备份", exact: true })).toBeEnabled();
-  expect(await rawStorage(page)).toBe(before);
+  await expect.poll(async () => (await persisted(page))?.life.media.entries.find(entry => entry.id === "trakt:movie:1")?.poster).toBe(PUBLIC_POSTER_URL);
+  const repaired = await persisted(page);
+  const original = JSON.parse(before!) as StoredWorkspace;
+  // Public artwork repair may add only a poster; all existing workspace data stays exact.
+  const withoutPosters = (workspace: StoredWorkspace) => ({
+    ...workspace,
+    life: { ...workspace.life, media: { ...workspace.life.media, entries: workspace.life.media.entries.map(({ poster: _poster, ...entry }) => entry) } },
+  });
+  expect(withoutPosters(repaired!)).toEqual(withoutPosters(original));
+  expect(repaired?.life.media.entries.find(entry => entry.id === "manual:kept-movie")).toEqual(original.life.media.entries[1]);
+  expect(trakt.tokenCalls).toBe(tokenCallsBeforeReload);
+  expect(trakt.apiCalls).toEqual(listCallsBeforeReload);
+  expect(trakt.summaryCalls.slice(publicSummaryStart)).toEqual(["/movies/1"]);
+  expect(trakt.summaryAuthorizations.slice(summaryAuthStart)).toEqual([undefined]);
+  expect(await connectionRecord(page)).toBeNull();
+  await expectAuthorizationCleared(page, [AUTHORIZATION_CODE, ACCESS_TOKEN, REFRESH_TOKEN, ...trakt.states, ...trakt.verifiers]);
 });
 
 test("390px 手机中的五个主导航排成一行，长片名与感想保存回看时没有横向溢出", async ({ page }) => {
@@ -523,7 +646,7 @@ test("390px 手机中的五个主导航排成一行，长片名与感想保存�
 
 test("海报从官方来源缓存为Blob，同一图片不重复下载，刷新复用缓存，失败可重试且备份不含图片内容", async ({ page, context }) => {
   const before = originalState();
-  const poster = "https://walter-r2.trakt.tv/images/movies/000/012/601/posters/thumb/e0d9dd35c5.jpg.webp";
+  const poster = LEGACY_POSTER_URL;
   const retryPoster = FAILED_POSTER_URL;
   before.life.media.entries[0].poster = poster;
   before.life.media.entries[1].poster = poster;
@@ -560,7 +683,7 @@ test("海报从官方来源缓存为Blob，同一图片不重复下载，刷新�
   }
   expect(await rawStorage(page)).toBe(rawBefore);
   allowRetry = true;
-  await page.getByRole("button", { name: "重试失败海报", exact: true }).click();
+  await page.getByRole("button", { name: "修复海报", exact: true }).click();
   await expect(page.locator("[data-poster-failed]")).toHaveCount(0);
   await expect(loaded).toHaveCount(4);
   expect(downloads[poster]).toBe(1);

@@ -7,3 +7,4 @@
 @media(max-width:640px){.media-title-art{width:100%;height:auto;aspect-ratio:2/3}.media-detail-poster .media-title-art{width:120px;height:180px}.media-card header{flex-wrap:wrap}.media-card header .media-actions{gap:12px}.media-card header .media-actions .text-button{font-size:10px}}
 
 .trakt-auto-status{display:flex;align-items:center;justify-content:space-between;gap:14px;background:#edf4e5;color:#5f784e;border-radius:10px;padding:13px 16px;margin-bottom:22px;font-size:12px;line-height:1.8}.trakt-connected{padding:14px 17px;background:#edf5e6;border-radius:10px;margin:18px 0}.trakt-connected p{font-size:12px;line-height:1.9}
+.media-poster-diagnostics pre{max-width:100%;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;font-size:12px}.media-poster-diagnostics details{margin-top:12px}.media-poster-diagnostics p{overflow-wrap:anywhere}

@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { MAX_MEDIA_IMPORT_BYTES, mediaLibrarySchema, normalizeMediaPoster, traktMediaId, type MediaEntry, type MediaLibrary } from "./media";
+import { MAX_MEDIA_IMPORT_BYTES, imdbPoster, isLegacyTraktPoster, mediaLibrarySchema, normalizeMediaPoster, traktMediaId, type MediaEntry, type MediaLibrary } from "./media";
 
 export const TRAKT_AUTH_CONTEXT_KEY = "life-workbench:trakt-pkce";
 // This is our local sign-in window, not a documented Trakt authorization-code lifetime.
@@ -12,7 +12,7 @@ const AUTH_ERROR = "临时授权信息无效或已过期，请重新连接 Trakt
 const CLIENT_ERROR = "请填写有效的 Trakt Client ID，并配置本站的 HTTPS 回调地址。";
 
 export class TraktError extends Error {
-  constructor(message: string, public readonly code?: "unauthorized" | "reauthorization" | "storage" | "refresh-lock") { super(message); this.name = "TraktError"; }
+  constructor(message: string, public readonly code?: "unauthorized" | "reauthorization" | "storage" | "refresh-lock", public readonly status?: number) { super(message); this.name = "TraktError"; }
 }
 
 export interface TraktAuthorizationContext {
@@ -23,11 +23,22 @@ export interface TraktAuthorizationContext {
   createdAt: number;
 }
 export type TraktTemporaryStorage = Pick<Storage, "getItem" | "setItem" | "removeItem">;
+/** Aggregate counts only; rejected may overlap found/missing when an alternate poster succeeds. */
+export interface TraktArtworkProgress {
+  checked: number;
+  found: number;
+  missing: number;
+  failed: number;
+  deferred: number;
+  rejected: number;
+}
 export interface TraktRequestOptions {
   fetch?: typeof globalThis.fetch;
   signal?: AbortSignal;
   timeoutMs?: number;
   now?: number;
+  knownPosters?: ReadonlyMap<string, string>;
+  onArtworkProgress?: (progress: TraktArtworkProgress) => void;
 }
 
 const clientIdSchema = z.string().min(1).max(256).regex(/^[A-Za-z0-9_-]+$/);
@@ -144,7 +155,7 @@ async function requestJson(url: string, init: RequestInit, options: TraktRequest
       ...init, signal: controller.signal, credentials: "omit", referrerPolicy: "no-referrer", cache: "no-store",
     });
     if (!response.ok) {
-      if (response.status === 401) throw new TraktError("Trakt 授权已失效，请重新连接。", "unauthorized");
+      if (response.status === 401) throw new TraktError("Trakt 授权已失效，请重新连接。", "unauthorized", 401);
       if (response.status === 400 && url === `${AUTHORITY}/oauth/token`) {
         // Inspect only the OAuth error tag; never surface server bodies or descriptions.
         const body = await response.text();
@@ -153,15 +164,15 @@ async function requestJson(url: string, init: RequestInit, options: TraktRequest
           catch (error) { if (error instanceof TraktError) throw error; }
         }
       }
-      if (response.status === 403) throw new TraktError("Trakt 拒绝了请求，请检查应用配置后重试。");
-      if (response.status === 429) throw new TraktError("Trakt 请求过于频繁，请稍后重试。");
-      throw new TraktError("Trakt 服务暂时无法完成请求，请稍后重试。");
+      if (response.status === 403) throw new TraktError("Trakt 拒绝了请求，请检查应用配置后重试。", undefined, response.status);
+      if (response.status === 429) throw new TraktError("Trakt 请求过于频繁，请稍后重试。", undefined, response.status);
+      throw new TraktError("Trakt 服务暂时无法完成请求，请稍后重试。", undefined, response.status);
     }
     const text = await response.text();
     if (new TextEncoder().encode(text).byteLength > MAX_MEDIA_IMPORT_BYTES) throw new TraktError("Trakt 单页数据过大，本次未导入。");
     if (controller.signal.aborted) throw aborted();
     try { return { value: JSON.parse(text), headers: response.headers }; }
-    catch { throw new TraktError(DATA_ERROR); }
+    catch { throw new TraktError(DATA_ERROR, undefined, response.status); }
   } catch (error) {
     if (options.signal?.aborted) throw aborted();
     if (timedOut) throw new TraktError("Trakt 请求超时，请稍后重试。");
@@ -253,7 +264,8 @@ const safeId = z.number().int().positive().max(Number.MAX_SAFE_INTEGER);
 const timestamp = z.iso.datetime({ offset: true }).refine(value => !value.startsWith("0000-"));
 const titleSchema = z.string().trim().min(1).max(500);
 const genresSchema = z.array(z.string().trim().min(1).max(100)).max(30);
-const idsSchema = z.object({ trakt: safeId, slug: z.string().max(200).regex(/^[a-z0-9-]+$/i).nullish() });
+const imdbIdSchema = z.string().regex(/^tt\d{5,12}$/);
+const idsSchema = z.object({ trakt: safeId, slug: z.string().max(200).regex(/^[a-z0-9-]+$/i).nullish(), imdb: imdbIdSchema.nullish().catch(undefined) });
 const titleMetadata = z.object({
   title: titleSchema, year: z.number().int().min(1880).max(2200).nullish(),
   ids: idsSchema, genres: genresSchema.optional(),
@@ -278,6 +290,109 @@ function traktPoster(images: unknown): string | undefined {
     const url = normalizeMediaPoster(value);
     if (url) return url;
   }
+}
+
+function hasRejectedPoster(images: unknown): boolean {
+  if (!images || typeof images !== "object" || !("poster" in images) || !Array.isArray(images.poster)) return false;
+  return images.poster.slice(0, 10).some(value => typeof value === "string" && value.length > 0 && !normalizeMediaPoster(value));
+}
+
+/** List endpoints contain cached media snapshots; summaries provide current artwork. */
+async function hydratePosters(
+  entries: Map<string, MediaEntry>, rejected: Set<string>, accessToken: string | undefined, clientId: string, options: TraktRequestOptions,
+): Promise<void> {
+  const titles = [...entries.values()].filter(entry => entry.kind === "movie" || entry.kind === "show");
+  const progress: TraktArtworkProgress = { checked: 0, found: 0, missing: 0, failed: 0, deferred: titles.length, rejected: 0 };
+  const report = () => {
+    progress.rejected = rejected.size;
+    // A UI callback must not discard a successfully read library.
+    try { options.onArtworkProgress?.({ ...progress }); } catch { /* observer only */ }
+  };
+  const pending: MediaEntry[] = [];
+  for (const entry of titles) {
+    const generated = imdbPoster(entry.imdbId);
+    if (generated && (!entry.poster || isLegacyTraktPoster(entry.poster))) entry.poster = generated;
+    const known = options.knownPosters?.get(entry.id);
+    if ((!entry.poster || isLegacyTraktPoster(entry.poster)) && known) {
+      const normalized = normalizeMediaPoster(known);
+      if (normalized) entry.poster = normalized;
+      else rejected.add(entry.id);
+    }
+    if (entry.poster && !isLegacyTraktPoster(entry.poster)) { progress.checked += 1; progress.found += 1; progress.deferred -= 1; }
+    else if (entry.traktId !== undefined) pending.push(entry);
+  }
+  report();
+  let next = 0;
+  let stopped = false;
+  let fatal: unknown;
+  const summarySchema = z.object({ ids: z.object({ trakt: safeId, imdb: imdbIdSchema.nullish().catch(undefined) }), images: z.unknown().optional() });
+  const worker = async () => {
+    while (!stopped && next < pending.length && next < 500) {
+      if (options.signal?.aborted) { stopped = true; fatal = aborted(); return; }
+      const entry = pending[next++];
+      try {
+        const url = new URL(`/${entry.kind === "movie" ? "movies" : "shows"}/${entry.traktId}`, API_ORIGIN);
+        url.searchParams.set("extended", "full");
+        const { value } = await requestJson(url.href, {
+          method: "GET", headers: { "Content-Type": "application/json", "trakt-api-key": clientId, "trakt-api-version": "2", ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}) },
+        }, options);
+        const summary = summarySchema.safeParse(value);
+        if (summary.success && summary.data.ids.trakt === entry.traktId) {
+          if (hasRejectedPoster(summary.data.images)) rejected.add(entry.id);
+          if (summary.data.ids.imdb) entry.imdbId = summary.data.ids.imdb;
+          const poster = imdbPoster(entry.imdbId) ?? traktPoster(summary.data.images);
+          if (poster) entry.poster = poster;
+        }
+        if (entry.poster && !isLegacyTraktPoster(entry.poster)) progress.found += 1;
+        else progress.missing += 1;
+      } catch (error) {
+        if (options.signal?.aborted || (error instanceof TraktError && error.code === "unauthorized")) {
+          stopped = true; fatal = error;
+        } else if (error instanceof TraktError && (error.status === 404 || error.status === 200)) {
+          progress.missing += 1;
+        } else {
+          progress.failed += 1;
+          // Permission errors, rate limits, outages and network failures are not per-title misses.
+          stopped = true;
+        }
+      }
+      progress.checked += 1;
+      progress.deferred -= 1;
+      report();
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(3, pending.length) }, worker));
+  if (fatal) throw fatal;
+  if (options.signal?.aborted) throw aborted();
+  report();
+}
+
+/** Public summaries can repair saved libraries without an account session. */
+export async function fetchTraktArtwork(
+  library: MediaLibrary, clientId: string, accessToken: string | undefined, options: TraktRequestOptions = {},
+): Promise<MediaLibrary> {
+  return fetchArtwork(library, clientId, accessToken, options, new Set());
+}
+
+async function fetchArtwork(
+  library: MediaLibrary, clientId: string, accessToken: string | undefined, options: TraktRequestOptions, rejected: Set<string>,
+): Promise<MediaLibrary> {
+  if (!clientIdSchema.safeParse(clientId).success || (accessToken !== undefined && !tokenSchema.safeParse(accessToken).success)) throw new TraktError("Trakt 授权信息不完整，请重新连接。");
+  const parsed = mediaLibrarySchema.safeParse(library);
+  if (!parsed.success) throw new TraktError(DATA_ERROR);
+  const entries = new Map(parsed.data.entries.map(entry => [entry.id, entry]));
+  await hydratePosters(entries, rejected, accessToken, clientId, options);
+  for (const entry of entries.values()) {
+    if (entry.kind === "episode" && (!entry.poster || isLegacyTraktPoster(entry.poster)) && entry.showId) {
+      const poster = entries.get(entry.showId)?.poster;
+      if (poster) entry.poster = poster;
+    }
+  }
+  if (options.signal?.aborted) throw aborted();
+  const result = mediaLibrarySchema.safeParse({ ...parsed.data, entries: [...entries.values()] });
+  if (!result.success) throw new TraktError(DATA_ERROR);
+  if (new TextEncoder().encode(JSON.stringify(result.data)).byteLength > MAX_MEDIA_IMPORT_BYTES) throw new TraktError("Trakt 资料超过导入文件大小上限，本次未导入。");
+  return result.data;
 }
 
 function headerInteger(headers: Headers, name: string, minimum: number, maximum: number): number {
@@ -335,15 +450,19 @@ export async function fetchTraktLibrary(
   const now = options.now ?? Date.now();
   if (!Number.isSafeInteger(now) || now < 0 || now > 8_640_000_000_000_000) throw new TraktError(DATA_ERROR);
   const entries = new Map<string, MediaEntry>();
+  const rejectedPosters = new Set<string>();
   const historyIds = new Set<number>();
   function title(kind: "movie" | "show", metadata: TitleMetadata): MediaEntry {
     const id = traktMediaId(kind, metadata.ids.trakt);
     const previous = entries.get(id);
-    const poster = traktPoster(metadata.images) ?? previous?.poster;
+    if (hasRejectedPoster(metadata.images)) rejectedPosters.add(id);
+    const imdbId = metadata.ids.imdb ?? previous?.imdbId;
+    const poster = imdbPoster(imdbId) ?? traktPoster(metadata.images) ?? previous?.poster;
     const record: MediaEntry = {
       id, kind, title: metadata.title, ...(metadata.year == null ? {} : { year: metadata.year }),
       genres: metadata.genres ?? previous?.genres ?? [], status: previous?.status ?? "unclassified",
       history: previous?.history ?? [], traktId: metadata.ids.trakt,
+      ...(imdbId ? { imdbId } : {}),
       ...(poster ? { poster } : {}),
       ...(metadata.ids.slug ? { traktUrl: `https://trakt.tv/${kind === "movie" ? "movies" : "shows"}/${metadata.ids.slug}` } : {}),
       ...(previous?.rating === undefined ? {} : { rating: previous.rating }),
@@ -367,7 +486,7 @@ export async function fetchTraktLibrary(
     const id = traktMediaId("episode", row.episode.ids.trakt);
     const previous = entries.get(id);
     if (previous && (previous.showId !== show.id || previous.season !== row.episode.season || previous.episode !== row.episode.number)) throw new TraktError(DATA_ERROR);
-    const poster = traktPoster(row.episode.images) ?? show.poster;
+    const poster = traktPoster(row.episode.images) ?? previous?.poster;
     const entry: MediaEntry = {
       id, kind: "episode", title: row.episode.title ?? `${show.title} · S${row.episode.season}E${row.episode.number}`,
       genres: row.episode.genres ?? previous?.genres ?? [], status: "watched", history: previous?.history ?? [],
@@ -397,16 +516,9 @@ export async function fetchTraktLibrary(
     const entry = title("show", row.show);
     if (entry.status === "unclassified") entry.status = "wanted";
   }
-  // Some endpoints supply artwork only in later show metadata.
-  for (const entry of entries.values()) {
-    if (entry.kind === "episode" && !entry.poster && entry.showId) {
-      const poster = entries.get(entry.showId)?.poster;
-      if (poster) entry.poster = poster;
-    }
-  }
   if (options.signal?.aborted) throw aborted();
   const result = mediaLibrarySchema.safeParse({ version: 1, source: "trakt", syncedAt: new Date(now).toISOString(), entries: [...entries.values()] });
   if (!result.success) throw new TraktError(DATA_ERROR);
   if (new TextEncoder().encode(JSON.stringify(result.data)).byteLength > MAX_MEDIA_IMPORT_BYTES) throw new TraktError("Trakt 资料超过导入文件大小上限，本次未导入。");
-  return result.data;
+  return fetchArtwork(result.data, clientId, accessToken, options, rejectedPosters);
 }

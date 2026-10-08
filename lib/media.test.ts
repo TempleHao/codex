@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { emptyMediaLibrary, mediaEntrySchema, mediaLibrarySchema, mergeMediaLibraries, normalizeMediaPoster, parseMediaImport, traktMediaId } from "./media";
+import { emptyMediaLibrary, imdbPoster, isLegacyTraktPoster, mediaEntrySchema, mediaLibrarySchema, mergeMediaLibraries, normalizeMediaPoster, parseMediaImport, traktMediaId } from "./media";
 import type { MediaEntry, MediaLibrary } from "./media";
 
 const movie = (overrides: Partial<MediaEntry> = {}): MediaEntry => ({
@@ -18,6 +18,26 @@ const library = (entries: MediaEntry[] = [movie()], overrides: Partial<MediaLibr
 const watched = (id: string, watchedAt = "2026-10-07T12:00:00+08:00") => ({ id, watchedAt });
 
 describe("portable media imports", () => {
+  it("accepts only the exact public IMDb poster endpoint and preserves legacy import compatibility", () => {
+    const poster = "https://images.metahub.space/poster/medium/tt1375666/img";
+    expect(imdbPoster("tt1375666")).toBe(poster);
+    expect(normalizeMediaPoster(poster)).toBe(poster);
+    expect(isLegacyTraktPoster(poster)).toBe(false);
+    expect(isLegacyTraktPoster("https://walter-r2.trakt.tv/images/movies/posters/a.jpg.webp")).toBe(true);
+    expect(parseMediaImport(library([movie({ imdbId: "tt1375666", poster })])).entries[0]).toMatchObject({ imdbId: "tt1375666", poster });
+    for (const id of ["tt1234", "tt1234567890123", "TT1375666", "tt1375666?token=x", "1375666", "tt../img"]) {
+      expect(imdbPoster(id)).toBeUndefined();
+      expect(mediaEntrySchema.safeParse(movie({ imdbId: id })).success).toBe(false);
+    }
+    for (const invalid of [
+      poster.replace("https:", "http:"), poster + "?key=x", poster + "#x", poster + "/", poster.replace(".space/", ".space:443/"),
+      poster.replace("https://", "https://user@"), poster.replace(".space", ".space.evil.test"), poster.replace("medium", "small"),
+      poster.replace("/img", "/x/../img"), poster.replace("tt1375666", "tt1234"), poster.replace("tt1375666", "tt1234567890123"),
+    ]) {
+      expect(normalizeMediaPoster(invalid)).toBeUndefined();
+      expect(mediaEntrySchema.safeParse(movie({ poster: invalid })).success).toBe(false);
+    }
+  });
   it("accepts documented HTTPS poster sources and rejects arbitrary image origins", () => {
     const path = "walter-r2.trakt.tv/images/movies/000/012/601/posters/thumb/e0d9dd35c5.jpg.webp";
     const poster = `https://${path}`;

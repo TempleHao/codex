@@ -2,9 +2,11 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   TRAKT_AUTH_CONTEXT_KEY, TRAKT_LOCAL_AUTH_MAX_AGE_MS, TraktError,
   clearTraktAuthorizationContext, completeTraktAuthorization, consumeTraktCallback,
-  createTraktAuthorization, exchangeTraktCode, fetchTraktLibrary, saveTraktAuthorizationContext, traktPkceChallenge,
+  createTraktAuthorization, exchangeTraktCode, fetchTraktLibrary, fetchTraktArtwork, saveTraktAuthorizationContext, traktPkceChallenge,
   completeTraktSessionAuthorization, refreshTraktSession, type TraktAuthorizationContext, type TraktTemporaryStorage,
+  type TraktArtworkProgress,
 } from "./trakt";
+import type { MediaLibrary } from "./media";
 
 const NOW = Date.parse("2026-10-08T12:00:00Z");
 const REDIRECT = "https://example.github.io/workbench/trakt/callback/";
@@ -41,17 +43,28 @@ const ratingMovie = (id = 1, rating = 8) => ({ type: "movie", rated_at: watchedA
 const ratingShow = (id = 4, rating = 7) => ({ type: "show", rated_at: watchedAt, rating, show: show(id) });
 const wantedMovie = (id = 3) => ({ id: 400 + id, type: "movie", listed_at: watchedAt, movie: movie(id) });
 const wantedShow = (id = 5) => ({ id: 500 + id, type: "show", listed_at: watchedAt, show: show(id) });
-function libraryFetch(datasets: Record<string, unknown[]> = {}, limit = 250) {
+const POSTER_PATH = "walter-r2.trakt.tv/images/movies/000/012/601/posters/thumb/e0d9dd35c5.jpg.webp";
+const POSTER = `https://${POSTER_PATH}`;
+const IMDB = "tt1375666";
+const METAHUB = `https://images.metahub.space/poster/medium/${IMDB}/img`;
+function libraryFetch(datasets: Record<string, unknown[]> = {}, limit = 250, summaries: Record<string, unknown> = {}) {
   return vi.fn<typeof fetch>(async (input, init) => {
     const url = new URL(String(input));
     expect(url.origin).toBe("https://api.trakt.tv");
-    expect(url.searchParams.get("extended")).toBe("full,images");
-    expect(url.searchParams.get("limit")).toBe("250");
     expect(init).toMatchObject({ method: "GET", credentials: "omit", referrerPolicy: "no-referrer", cache: "no-store" });
     const headers = new Headers(init?.headers);
     expect(headers.get("Authorization")).toBe(`Bearer ${TOKEN}`);
     expect(headers.get("trakt-api-key")).toBe(CLIENT);
     expect(headers.get("trakt-api-version")).toBe("2");
+    if (/^\/(movies|shows)\/\d+$/.test(url.pathname)) {
+      expect(url.searchParams.get("extended")).toBe("full");
+      expect(url.searchParams.has("page")).toBe(false);
+      const value = summaries[url.pathname] ?? { ids: { trakt: Number(url.pathname.split("/").at(-1)) } };
+      if (value instanceof Response) return value;
+      return new Response(JSON.stringify(value));
+    }
+    expect(url.searchParams.get("extended")).toBe("full,images");
+    expect(url.searchParams.get("limit")).toBe("250");
     const rows = datasets[url.pathname] ?? [];
     const page = Number(url.searchParams.get("page"));
     return pageResponse(rows.slice((page - 1) * limit, page * limit), page, limit, rows.length);
@@ -59,6 +72,165 @@ function libraryFetch(datasets: Record<string, unknown[]> = {}, limit = 250) {
 }
 
 afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); });
+
+describe("Trakt current summary artwork", () => {
+  const library = (count = 1): MediaLibrary => ({
+    version: 1, source: "manual", syncedAt: null,
+    entries: Array.from({ length: count }, (_, index) => ({
+      id: `trakt:movie:${index + 1}`, traktId: index + 1, kind: "movie", title: `Saved ${index + 1}`,
+      genres: ["drama"], status: "watched", rating: 6, thought: "My original thought",
+      history: [{ id: `saved:${index + 1}`, watchedAt }],
+    })),
+  });
+  it("uses embedded IMDb IDs without requesting summaries", async () => {
+    const fetcher = libraryFetch({ "/users/me/watchlist/movies": [{
+      ...wantedMovie(1), movie: movie(1, { ids: { trakt: 1, imdb: IMDB }, images: { poster: [POSTER_PATH] } }),
+    }] });
+    const result = await fetchTraktLibrary(TOKEN, CLIENT, { fetch: fetcher, now: NOW });
+    expect(fetcher).toHaveBeenCalledTimes(6);
+    expect(result.entries[0]).toMatchObject({ poster: METAHUB, imdbId: IMDB, status: "wanted" });
+  });
+
+  it("migrates saved legacy posters with IMDb and repairs legacy episode artwork from the parent", async () => {
+    const original: MediaLibrary = { ...library(1), entries: [
+      { ...library(1).entries[0], imdbId: IMDB, poster: POSTER },
+      { id: "trakt:show:4", traktId: 4, kind: "show", title: "Saved show", genres: [], status: "watching", history: [], imdbId: "tt0903747", poster: POSTER },
+      { id: "trakt:episode:9", traktId: 9, kind: "episode", title: "Saved episode", genres: [], status: "watched", history: [], showId: "trakt:show:4", season: 1, episode: 2, poster: POSTER },
+    ] };
+    const fetcher = vi.fn<typeof fetch>();
+    const result = await fetchTraktArtwork(original, CLIENT, undefined, { fetch: fetcher });
+    expect(fetcher).not.toHaveBeenCalled();
+    expect(result.entries.map(entry => entry.poster)).toEqual([METAHUB, "https://images.metahub.space/poster/medium/tt0903747/img", "https://images.metahub.space/poster/medium/tt0903747/img"]);
+    expect(result.entries[0]).toEqual({ ...original.entries[0], poster: METAHUB });
+    expect(original.entries[0].poster).toBe(POSTER);
+  });
+
+  it("does not let saved legacy posters hide the summary needed to recover an IMDb ID", async () => {
+    const original = library();
+    original.entries[0].poster = POSTER;
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(new Response(JSON.stringify({ ids: { trakt: 1, imdb: IMDB } })));
+    const result = await fetchTraktArtwork(original, CLIENT, undefined, { fetch: fetcher, knownPosters: new Map([[original.entries[0].id, POSTER]]) });
+    expect(fetcher).toHaveBeenCalledOnce();
+    expect(result.entries[0]).toEqual({ ...original.entries[0], imdbId: IMDB, poster: METAHUB });
+  });
+
+  it("ignores malformed optional IMDb IDs without losing account history or generating unsafe poster URLs", async () => {
+    const fetcher = libraryFetch({ "/users/me/history/movies": [{
+      ...historyMovie(), movie: movie(1, { ids: { trakt: 1, imdb: "tt1375666?private=x" } }),
+    }] }, 250, { "/movies/1": { ids: { trakt: 1, imdb: "tt../img" }, images: { poster: [] } } });
+    const result = await fetchTraktLibrary(TOKEN, CLIENT, { fetch: fetcher, now: NOW });
+    expect(result.entries[0]).toMatchObject({ title: "Original movie 1", history: [{ id: "trakt:history:101", watchedAt }] });
+    expect(result.entries[0]).not.toHaveProperty("imdbId");
+    expect(result.entries[0]).not.toHaveProperty("poster");
+    expect(fetcher).toHaveBeenCalledTimes(7);
+  });
+  it("hydrates stale embedded snapshots once per title, then gives episodes the final parent poster", async () => {
+    const fetcher = libraryFetch({
+      "/users/me/history/movies": [historyMovie(), historyMovie(102)],
+      "/users/me/history/episodes": [historyEpisode()],
+      "/users/me/ratings/movies": [ratingMovie()],
+      "/users/me/watchlist/movies": [wantedMovie(1)],
+    }, 250, {
+      "/movies/1": { ...movie(1), ids: { trakt: 1, imdb: IMDB }, title: "Summary title must not replace original", images: { poster: [POSTER_PATH] } },
+      "/shows/4": { ...show(4), ids: { trakt: 4, imdb: IMDB }, images: { poster: [POSTER_PATH] } },
+    });
+    const progress: TraktArtworkProgress[] = [];
+    const result = await fetchTraktLibrary(TOKEN, CLIENT, { fetch: fetcher, now: NOW, onArtworkProgress: value => progress.push(value) });
+    expect(result.entries.find(entry => entry.kind === "movie")).toMatchObject({ title: "Original movie 1", rating: 8, poster: METAHUB, imdbId: IMDB, history: [
+      { id: "trakt:history:101", watchedAt }, { id: "trakt:history:102", watchedAt },
+    ] });
+    expect(result.entries.find(entry => entry.kind === "episode")?.poster).toBe(METAHUB);
+    expect(fetcher.mock.calls.slice(6).map(([url]) => new URL(String(url)).pathname)).toEqual(["/movies/1", "/shows/4"]);
+    expect(progress.at(-1)).toEqual({ checked: 2, found: 2, missing: 0, failed: 0, deferred: 0, rejected: 1 });
+  });
+
+  it("uses valid known posters, prefers API artwork, and ignores invalid saved URLs", async () => {
+    const fetcher = libraryFetch({ "/users/me/watchlist/movies": [
+      { ...wantedMovie(1), movie: movie(1, { images: { poster: [METAHUB] } }) }, wantedMovie(2), wantedMovie(3),
+    ] });
+    const progress = vi.fn();
+    const result = await fetchTraktLibrary(TOKEN, CLIENT, {
+      fetch: fetcher, now: NOW, knownPosters: new Map([
+        ["trakt:movie:1", METAHUB.replace(IMDB, "tt0111161")], ["trakt:movie:2", METAHUB], ["trakt:movie:3", "https://evil.test/x.webp"],
+      ]), onArtworkProgress: progress,
+    });
+    expect(result.entries.map(entry => entry.poster)).toEqual([METAHUB, METAHUB, undefined]);
+    expect(fetcher.mock.calls.slice(6).map(([url]) => new URL(String(url)).pathname)).toEqual(["/movies/3"]);
+    expect(progress.mock.lastCall?.[0]).toEqual({ checked: 3, found: 2, missing: 1, failed: 0, deferred: 0, rejected: 2 });
+  });
+
+  it("repairs a saved library publicly while preserving all original data and source time", async () => {
+    const original = library();
+    const fetcher = vi.fn<typeof fetch>(async (_input, init) => {
+      expect(new Headers(init?.headers).has("Authorization")).toBe(false);
+      expect(init).toMatchObject({ credentials: "omit", referrerPolicy: "no-referrer" });
+      return new Response(JSON.stringify({ ids: { trakt: 1, imdb: IMDB }, title: "Changed", images: { poster: [POSTER_PATH] } }));
+    });
+    const result = await fetchTraktArtwork(original, CLIENT, undefined, { fetch: fetcher });
+    expect(result).toEqual({ ...original, entries: [{ ...original.entries[0], poster: METAHUB, imdbId: IMDB }] });
+    expect(original.entries[0]).not.toHaveProperty("poster");
+  });
+
+  it("distinguishes missing artwork, unsupported URLs, 404 and malformed summaries without dropping titles", async () => {
+    const replies = [
+      new Response(JSON.stringify({ ids: { trakt: 1 }, images: { poster: [] } })),
+      new Response(JSON.stringify({ ids: { trakt: 2 }, images: { poster: ["https://evil.test/x.webp"] } })),
+      new Response("private error", { status: 404 }), new Response("invalid json"),
+      new Response(JSON.stringify({ ids: { trakt: 999 }, images: { poster: [POSTER_PATH] } })),
+    ];
+    const fetcher = vi.fn<typeof fetch>(async input => replies[Number(new URL(String(input)).pathname.split("/").at(-1)) - 1]);
+    const progress = vi.fn();
+    const original = library(5);
+    expect(await fetchTraktArtwork(original, CLIENT, undefined, { fetch: fetcher, onArtworkProgress: progress })).toEqual(original);
+    expect(progress.mock.lastCall?.[0]).toEqual({ checked: 5, found: 0, missing: 5, failed: 0, deferred: 0, rejected: 1 });
+  });
+
+  it.each([429, 503, "network"])("stops queued summaries after %s, retaining completed library data", async failure => {
+    let active = 0;
+    let peak = 0;
+    const fetcher = vi.fn<typeof fetch>(async input => {
+      active += 1; peak = Math.max(peak, active);
+      await Promise.resolve();
+      active -= 1;
+      const id = Number(new URL(String(input)).pathname.split("/").at(-1));
+      if (id === 1) {
+        if (failure === "network") throw new Error(TOKEN);
+        return new Response(TOKEN, { status: failure as number });
+      }
+      return new Response(JSON.stringify({ ids: { trakt: id, imdb: IMDB }, images: { poster: [POSTER_PATH] } }));
+    });
+    const original = library(8);
+    const progress = vi.fn();
+    const result = await fetchTraktArtwork(original, CLIENT, TOKEN, { fetch: fetcher, onArtworkProgress: progress });
+    expect(peak).toBeLessThanOrEqual(3);
+    expect(fetcher).toHaveBeenCalledTimes(3);
+    expect(result.entries).toHaveLength(8);
+    expect(progress.mock.lastCall?.[0]).toEqual({ checked: 3, found: 2, missing: 0, failed: 1, deferred: 5, rejected: 0 });
+    expect(JSON.stringify(progress.mock.calls)).not.toContain(TOKEN);
+    expect(result.entries[0]).toEqual(original.entries[0]);
+  });
+
+  it("caps a refresh at 500 ordered summaries", async () => {
+    const requested: number[] = [];
+    const fetcher = vi.fn<typeof fetch>(async input => {
+      const id = Number(new URL(String(input)).pathname.split("/").at(-1));
+      requested.push(id);
+      return new Response(JSON.stringify({ ids: { trakt: id } }));
+    });
+    const progress = vi.fn();
+    await fetchTraktArtwork(library(505), CLIENT, undefined, { fetch: fetcher, onArtworkProgress: progress });
+    expect(requested).toEqual(Array.from({ length: 500 }, (_, index) => index + 1));
+    expect(progress.mock.lastCall?.[0]).toEqual({ checked: 500, found: 0, missing: 500, failed: 0, deferred: 5, rejected: 0 });
+  });
+
+  it("propagates unauthorized summaries and cancellation", async () => {
+    await expect(fetchTraktArtwork(library(), CLIENT, TOKEN, { fetch: vi.fn<typeof fetch>().mockResolvedValue(new Response(TOKEN, { status: 401 })) })).rejects.toMatchObject({ code: "unauthorized", status: 401 });
+    const controller = new AbortController();
+    const fetcher = vi.fn<typeof fetch>(async () => { controller.abort(); throw new Error(TOKEN); });
+    await expect(fetchTraktArtwork(library(5), CLIENT, TOKEN, { fetch: fetcher, signal: controller.signal })).rejects.toThrow("已取消 Trakt 导入。");
+    expect(fetcher).toHaveBeenCalledOnce();
+  });
+});
 
 describe("Trakt browser PKCE", () => {
   it("matches the RFC 7636 S256 challenge", async () => {
@@ -234,6 +406,7 @@ describe("Trakt complete read-only library imports", () => {
       "/users/me/history/movies", "/users/me/history/movies", "/users/me/history/episodes",
       "/users/me/ratings/movies", "/users/me/ratings/movies", "/users/me/ratings/shows",
       "/users/me/watchlist/movies", "/users/me/watchlist/movies", "/users/me/watchlist/shows",
+      "/movies/1", "/shows/4", "/movies/8", "/movies/3", "/shows/5",
     ]);
   });
 

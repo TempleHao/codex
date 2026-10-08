@@ -15,6 +15,16 @@ function memoryCache(): MediaPosterCache {
 afterEach(() => { vi.unstubAllGlobals(); vi.useRealTimers(); });
 
 describe("public browser poster cache", () => {
+  it.each(["image/jpeg", "image/png"])("caches the public fallback in its actual %s format", async contentType => {
+    const cache = memoryCache();
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(new Uint8Array([1, 2, 3]), { headers: { "content-type": contentType } })));
+    const source = "https://images.metahub.space/poster/medium/tt1375666/img";
+    const loader = createMediaPosterLoader({ cache });
+    const blob = await loader.load(source);
+    expect(blob.type).toBe(contentType);
+    expect(await createMediaPosterLoader({ cache }).load(source)).toBe(blob);
+    expect(globalThis.fetch).toHaveBeenCalledTimes(1);
+  });
   it("rejects unsafe addresses before reading storage or fetching", async () => {
     const cache = memoryCache();
     const fetch = vi.fn();
