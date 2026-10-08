@@ -34,6 +34,38 @@ function basic(body: Record<string, unknown>): unknown {
 }
 
 describe("temporary WeRead synchronization (offline gateway mocks)", () => {
+  it("continues an empty-text review page and checks totals against all review IDs", async () => {
+    const { client } = mocked(body => {
+      if (body.api_name === "/user/notebooks") return { books: [notebook("a", 10, { noteCount: 0, reviewCount: 2 })], hasMore: 0 };
+      if (body.api_name === "/review/list/mine") return body.synckey === 0
+        ? { reviews: [{ review: { reviewId: "empty", content: "", star: -1 } }], totalCount: 2, hasMore: 1, synckey: 50 }
+        : { reviews: [thought("text")], totalCount: 2, hasMore: 0 };
+      return basic(body);
+    });
+    const result = await fetchWeReadLibrary(client, { now });
+    expect(result.highlights).toHaveLength(1);
+    expect(result.highlights[0].id).toBe("review:text");
+  });
+
+  it("rejects repeated empty review IDs across pages", async () => {
+    const { client } = mocked(body => {
+      if (body.api_name === "/user/notebooks") return { books: [notebook("a", 10, { noteCount: 0, reviewCount: 2 })], hasMore: 0 };
+      if (body.api_name === "/review/list/mine") return { reviews: [{ review: { reviewId: "repeated" } }], totalCount: 2,
+        hasMore: body.synckey === 0 ? 1 : 0, synckey: 50 };
+      return basic(body);
+    });
+    await expect(fetchWeReadLibrary(client, { now })).rejects.toMatchObject({ code: "PaginationError", reason: "duplicate_note_ids" });
+  });
+
+  it("bounds review records even when none contain exportable text or a declared total", async () => {
+    const { client } = mocked(body => {
+      if (body.api_name === "/user/notebooks") return { books: [notebook("a", 10, { noteCount: 0, reviewCount: undefined })], hasMore: 0 };
+      if (body.api_name === "/review/list/mine") return { reviews: Array.from({ length: 10_001 }, (_, index) => ({ review: { reviewId: `empty-${index}` } })), hasMore: 0 };
+      return basic(body);
+    });
+    await expect(fetchWeReadLibrary(client, { now })).rejects.toMatchObject({ code: "LimitExceeded", limitKind: "notes" });
+  });
+
   it("preserves books, albums, article entrance, totals, hours, daily data, original text and thoughts across pages", async () => {
     const preferredHours = Array.from({ length: 24 }, (_, index) => index * 60);
     const { client, bodies } = mocked(body => {

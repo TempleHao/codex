@@ -152,6 +152,8 @@ export async function fetchWeReadLibrary(client: WeReadSyncClient, options: WeRe
     // Bookmark counts never count against a content limit: the API cannot export bookmark contents.
     if (estimatedExportableNotes > WEREAD_SYNC_LIMITS.notes) return notesLimit();
     let completed = 0;
+    const receivedReviewIds = new Set<string>();
+    let nonTextReviews = 0;
     const addNotes = (items: ReadingHighlight[], bookId: string) => {
       for (const item of items) {
         if (item.bookId !== bookId) return invalidData("note_book_mismatch");
@@ -185,10 +187,16 @@ export async function fetchWeReadLibrary(client: WeReadSyncClient, options: WeRe
             if (expectedThoughtCount !== undefined && expectedThoughtCount !== page.totalCount) return invalidData("thought_total_changed");
             expectedThoughtCount = page.totalCount;
           }
+          for (const reviewId of page.reviewIds) {
+            if (receivedReviewIds.has(reviewId)) return paginationError("duplicate_note_ids");
+            receivedReviewIds.add(reviewId);
+          }
+          nonTextReviews += page.reviewIds.length - page.highlights.length;
           addNotes(page.highlights, bookId);
-          thoughtCount += page.highlights.length;
+          if (notes.size + nonTextReviews > WEREAD_SYNC_LIMITS.notes) return notesLimit();
+          thoughtCount += page.reviewIds.length;
           if (!page.hasMore) break;
-          if (!page.highlights.length) return paginationError("thought_empty_continuation");
+          if (!page.reviewIds.length) return paginationError("thought_empty_continuation");
           if (page.nextSynckey === undefined) return paginationError("thought_cursor_missing");
           if (thoughtCursors.has(page.nextSynckey)) return paginationError("thought_cursor_repeated");
           thoughtCursors.add(page.nextSynckey);

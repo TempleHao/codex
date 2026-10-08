@@ -403,33 +403,39 @@ export function normalizeHighlights(response: unknown, bookId: string): ReadingH
   });
 }
 
-export interface ThoughtsPage { highlights: ReadingHighlight[]; hasMore: boolean; nextSynckey?: number; totalCount?: number; }
+export interface ThoughtsPage { highlights: ReadingHighlight[]; reviewIds: string[]; hasMore: boolean; nextSynckey?: number; totalCount?: number; }
 export function normalizeThoughts(response: unknown, bookId: string): ThoughtsPage {
   requireText(bookId);
   try {
     const payload = unwrapWeReadResponse(response);
     if (!Array.isArray(payload.reviews)) return invalidResponse("thought_reviews_not_array");
-    const highlights = payload.reviews.map(value => {
+    const reviewIds: string[] = [];
+    const highlights = payload.reviews.flatMap(value => {
       const wrapper = record(value);
       const review = record(wrapper?.review);
       if (!review) return invalidResponse("thought_item_invalid");
       const reviewId = id(review.reviewId);
-      if (!reviewId) return invalidResponse("thought_review_id_invalid");
+      if (!reviewId?.trim()) return invalidResponse("thought_review_id_invalid");
+      const normalizedId = `review:${reviewId}`.trim();
+      if (normalizedId.length > 200) return invalidResponse("thought_schema_invalid");
+      if ((review.abstract != null && typeof review.abstract !== "string")
+        || (review.content != null && typeof review.content !== "string")) return invalidResponse("thought_schema_invalid");
       const originalText = text(review.abstract) ?? "";
       const thought = text(review.content);
       const chapter = text(review.chapterName);
       if (originalText.length > 20_000 || (thought?.length ?? 0) > 20_000) return invalidResponse("thought_text_too_long");
       if ((chapter?.length ?? 0) > 1_000) return invalidResponse("thought_chapter_too_long");
-      if (!(originalText.trim() || thought?.trim())) return invalidResponse(
-        typeof review.star === "number" && Number.isInteger(review.star) && review.star >= 0 && review.star <= 5
-          ? "thought_text_empty_with_rating" : "thought_text_empty");
-      return parseHighlight({ id: `review:${reviewId}`, bookId, text: originalText, thought,
-        chapter, createdAt: unixDate(review.createTime), deepLink: deepLink(review.deepLink ?? wrapper?.deepLink) }, "thought_schema_invalid");
+      // Reviews may contain a rating or an empty personal entry without text.
+      // Count every valid ID for pagination, but do not invent a textual note.
+      reviewIds.push(normalizedId);
+      if (!(originalText.trim() || thought?.trim())) return [];
+      return [parseHighlight({ id: normalizedId, bookId, text: originalText, thought,
+        chapter, createdAt: unixDate(review.createTime), deepLink: deepLink(review.deepLink ?? wrapper?.deepLink) }, "thought_schema_invalid")];
     });
     const hasMore = paginationContinues(payload);
     const nextSynckey = hasMore ? count(payload.synckey) : undefined;
     if (hasMore && nextSynckey === undefined) return invalidResponse("pagination_cursor_missing");
-    return { highlights, hasMore, nextSynckey, totalCount: count(payload.totalCount) };
+    return { highlights, reviewIds, hasMore, nextSynckey, totalCount: count(payload.totalCount) };
   } catch (error) {
     if (error instanceof WeReadError) throw diagnosticError(error, "/review/list/mine", response);
     throw error;

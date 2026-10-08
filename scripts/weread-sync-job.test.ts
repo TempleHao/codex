@@ -385,7 +385,7 @@ describe("free GitHub WeRead encrypted synchronization job", () => {
       if (body.api_name === "/readdata/detail") return new Response(JSON.stringify({ totalReadTime: 600, baseTime: 0 }));
       if (body.api_name === "/user/notebooks") return new Response(JSON.stringify({ totalBookCount: 1, hasMore: 0,
         books: [{ bookId: library.books[0].id, book: { title: library.books[0].title, author: "作者" }, noteCount: 0, reviewCount: 1 }] }));
-      if (body.api_name === "/review/list/mine") return new Response(JSON.stringify({ reviews: [{ review: { reviewId: "offline-review", content: "", abstract: "" } }], totalCount: 1, hasMore: 0,
+      if (body.api_name === "/review/list/mine") return new Response(JSON.stringify({ reviews: [{ review: { content: "", abstract: "" } }], totalCount: 1, hasMore: 0,
         errmsg: `${token} ${passphrase} ${library.highlights[0].text}` }));
       throw new Error("Unexpected offline CI shape test request");
     });
@@ -397,7 +397,7 @@ describe("free GitHub WeRead encrypted synchronization job", () => {
     const annotations = log.mock.calls.map(([value]) => String(value)).filter(value => value.startsWith(prefix));
     expect(annotations).toHaveLength(1);
     expect(JSON.parse(annotations[0].slice(prefix.length))).toEqual({ stage: "notes", operation: "/review/list/mine",
-      responsePaginationType: "number", responseShapeReason: "thought_text_empty" });
+      responsePaginationType: "number", responseShapeReason: "thought_review_id_invalid" });
     const publicText = JSON.stringify([log.mock.calls, error.mock.calls]);
     for (const privateText of [token, passphrase, library.books[0].title, library.highlights[0].text]) expect(publicText).not.toContain(privateText);
     expect(await readStatus()).toMatchObject({ state: "failed", failureCode: "invalid_data" });

@@ -360,9 +360,7 @@ describe("documented WeRead normalizers", () => {
       [{ reviews: [null], hasMore: 0 }, "thought_item_invalid"],
       [{ reviews: [{ review: null }], hasMore: 0 }, "thought_item_invalid"],
       [{ reviews: [{ review: { content: "private-thought" } }], hasMore: 0 }, "thought_review_id_invalid"],
-      [{ reviews: [{ review: { reviewId: "private-review-id", content: " \n " } }], hasMore: 0 }, "thought_text_empty"],
-      [{ reviews: [{ review: { reviewId: "private-review-id", star: 3 } }], hasMore: 0 }, "thought_text_empty_with_rating"],
-      [{ reviews: [{ review: { reviewId: "private-review-id", star: -1 } }], hasMore: 0 }, "thought_text_empty"],
+      [{ reviews: [{ review: { reviewId: "private-review-id", content: 123 } }], hasMore: 0 }, "thought_schema_invalid"],
       [{ reviews: [{ review: { ...sample, content: "private".repeat(3_000) } }], hasMore: 0 }, "thought_text_too_long"],
       [{ reviews: [{ review: { ...sample, abstract: "private".repeat(3_000) } }], hasMore: 0 }, "thought_text_too_long"],
       [{ reviews: [{ review: { ...sample, chapterName: "private".repeat(200) } }], hasMore: 0 }, "thought_chapter_too_long"],
@@ -380,6 +378,19 @@ describe("documented WeRead normalizers", () => {
         expect(JSON.stringify(failure)).not.toContain("star");
       }
     }
+  });
+
+  it("counts empty and rating-only reviews without inventing textual notes", () => {
+    const page = normalizeThoughts({ reviews: [
+      { review: { reviewId: "empty", content: " \n ", abstract: null } },
+      { review: { reviewId: "rating", star: 3 } },
+      { review: { reviewId: "unrated", star: -1 } },
+      { review: { reviewId: "text", content: "真实的文字想法" } },
+    ], hasMore: 1, synckey: 50, totalCount: 4 }, "demo");
+    expect(page.reviewIds).toEqual(["review:empty", "review:rating", "review:unrated", "review:text"]);
+    expect(page.highlights).toHaveLength(1);
+    expect(page.highlights[0]).toMatchObject({ id: "review:text", thought: "真实的文字想法" });
+    expect(page).toMatchObject({ hasMore: true, nextSynckey: 50, totalCount: 4 });
   });
 
   it("adds fixed notebook shape and cursor reasons to malformed pages", () => {
