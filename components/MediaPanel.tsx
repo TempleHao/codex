@@ -4,6 +4,8 @@ import { useRef, useState, type FormEvent } from "react";
 import { chinaToday } from "@/lib/dates";
 import { MAX_MEDIA_IMPORT_BYTES, mediaEntrySchema, mergeMediaLibraries, parseMediaImport, type MediaEntry, type MediaLibrary } from "@/lib/media";
 import TraktSync from "./TraktSync";
+import type { TraktController } from "./useTraktAutoSync";
+import { invalidatePosterWorker } from "@/lib/poster-worker-client";
 import { MediaPoster } from "./MediaPoster";
 import { invalidateMediaPoster } from "@/lib/media-posters";
 import "./media.css";
@@ -16,7 +18,7 @@ function watchTime(value: string) { return Date.parse(value.length === 10 ? `${v
 function dateLabel(value: string) { return new Intl.DateTimeFormat("zh-CN", { timeZone: "Asia/Shanghai", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date(value.length === 10 ? `${value}T12:00:00+08:00` : value)); }
 
 type Draft = { original?: MediaEntry; title: string; kind: "movie" | "show" | "episode"; status: MediaEntry["status"]; year: string; rating: string; watchedAt: string; thought: string };
-export default function MediaPanel({ library, onChange, onRemember }: { library: MediaLibrary; onChange: (next: MediaLibrary) => Promise<void>; onRemember: (entry: MediaEntry) => Promise<void> }) {
+export default function MediaPanel({ library, onChange, onRemember, trakt }: { library: MediaLibrary; trakt: TraktController; onChange: (next: MediaLibrary) => Promise<void>; onRemember: (entry: MediaEntry) => Promise<void> }) {
   const [search, setSearch] = useState("");
   const [kind, setKind] = useState("all");
   const [status, setStatus] = useState("all");
@@ -64,6 +66,7 @@ export default function MediaPanel({ library, onChange, onRemember }: { library:
     event.preventDefault();
     if (!draft || busy) return;
     const { original } = draft;
+    if (original && JSON.stringify(original) !== JSON.stringify(entries.find(entry => entry.id === original.id))) { setError("这部作品已自动更新，草稿仍保留。请先核对最新记录，再重新打开编辑。"); return; }
     const parsed = mediaEntrySchema.safeParse({ ...original, id: original?.id ?? `manual:${crypto.randomUUID()}`, title: draft.title, kind: draft.kind, status: draft.status, genres: original?.genres ?? [], year: draft.year ? Number(draft.year) : undefined, rating: draft.rating ? Number(draft.rating) : undefined, thought: draft.thought,
       history: [...(original?.history ?? []), ...(draft.watchedAt ? [{ id: `manual:${crypto.randomUUID()}`, watchedAt: draft.watchedAt }] : [])] });
     if (!parsed.success) { setError("请检查片名、年份、评分和观看日期。评分为 0 到 10 分。"); return; }
@@ -73,9 +76,9 @@ export default function MediaPanel({ library, onChange, onRemember }: { library:
   async function retryPosters() {
     if (posterRetrying) return;
     const urls = [...new Set([...document.querySelectorAll<HTMLElement>("[data-poster-failed]")].map(element => element.dataset.posterFailed).filter((url): url is string => Boolean(url)))];
-    if (!urls.length) { setMessage("没有加载失败的海报。缺少海报地址的旧片单，可重新连接 Trakt 并保存一次。"); return; }
+    if (!urls.length) { setMessage("没有加载失败的海报。缺少海报地址时，可在 Trakt 连接处更新资料。"); return; }
     setPosterRetrying(true);
-    try { await Promise.all(urls.map(url => invalidateMediaPoster(url))); setPosterEpoch(value => value + 1); setMessage("正在重新加载失败的海报。"); }
+    try { await Promise.all(urls.map(async url => { await invalidateMediaPoster(url); await invalidatePosterWorker(url); })); setPosterEpoch(value => value + 1); setMessage("正在重新加载失败的海报。"); }
     catch { setError("海报缓存暂时无法更新，请稍后重试。"); }
     finally { setPosterRetrying(false); }
   }
@@ -92,7 +95,7 @@ export default function MediaPanel({ library, onChange, onRemember }: { library:
     {importing && <section className="media-card media-editor"><h2>导入影音资料</h2><input type="file" accept="application/json,.json" ref={fileRef} aria-label="选择影音 JSON 文件" onChange={async event => { const file = event.target.files?.[0]; if (!file) return; if (file.size > MAX_MEDIA_IMPORT_BYTES) { setError("影音文件过大，最多 5 MB。"); return; } try { setJson(await file.text()); setPreview(null); setError(""); } catch { setError("文件读取没有完成，请重新选择文件。"); } }}/><label className="field">影音资料 JSON<textarea rows={8} value={json} onChange={event => { setJson(event.target.value); setPreview(null); }}/></label><button type="button" className="button secondary" disabled={busy || !json.trim()} onClick={previewJson}>预览影音资料</button>{preview && <div className="media-import-preview"><p>本次导入 {preview.entries.length} 个作品条目、{preview.entries.reduce((sum, entry) => sum + entry.history.length, 0)} 次有日期的观看。</p><button type="button" className="button primary" disabled={busy} onClick={() => void run(async () => { await onChange(mergeMediaLibraries(library, preview)); setPreview(null); setImporting(false); }, "影音资料已合并。")}>确认导入影音</button></div>}</section>}
     <div className="media-library-layout"><section className="media-card"><header><h2>我的片单 <span className="count-pill">{visible.length}</span></h2><div className="media-actions"><button type="button" className="text-button" disabled={posterRetrying} onClick={() => void retryPosters()}>{posterRetrying ? "正在重试…" : "重试失败海报"}</button><button type="button" className="text-button" onClick={exportJson}>导出影音</button></div></header><div className="media-filters"><label className="media-search"><span className="media-sr-only">搜索影音</span><input placeholder="搜索电影、剧集" aria-label="搜索影音" value={search} onChange={event => setSearch(event.target.value)}/></label><select aria-label="筛选影音类型" value={kind} onChange={event => setKind(event.target.value)}><option value="all">所有类型</option>{Object.entries(KINDS).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select><select aria-label="筛选观看状态" value={status} onChange={event => setStatus(event.target.value)}><option value="all">所有状态</option>{Object.entries(STATUSES).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></div>{visible.length ? <div className="media-titles">{visible.slice(0, 100).map(entry => <button type="button" className={`media-title ${current?.id === entry.id ? "selected" : ""}`} aria-pressed={current?.id === entry.id} key={entry.id} onClick={() => setSelected(entry.id)}><MediaPoster key={`${entry.id}:${posterEpoch}`} url={entry.poster} title={entry.title} kind={entry.kind}/><span><strong>{entry.title}</strong><small>{entry.year ?? "年份未提供"}{entry.kind === "episode" ? ` · S${entry.season} E${entry.episode}` : ""}</small><em>{STATUSES[entry.status]}{entry.rating !== undefined ? ` · 我的评分 ${entry.rating}/10` : ""}</em></span></button>)}{visible.length > 100 && <p className="media-muted">先展示前 100 项，可通过搜索和筛选查找其余作品。</p>}</div> : <div className="media-empty"><span aria-hidden="true">▷</span><h3>{entries.length ? "没有符合条件的作品" : "留住故事，也留住当时的自己。"}</h3><p>可以先记一部作品，也可以连接 Trakt 带回自己的观影记录。</p></div>}</section><aside className="media-card media-detail" aria-label="影音详情">{current ? <><p className="eyebrow">{KINDS[current.kind]}</p>{current.poster && <div className="media-detail-poster"><MediaPoster key={`${current.id}:${posterEpoch}`} url={current.poster} title={current.title} kind={current.kind}/></div>}<h2>{current.title}</h2>{current.showId && <p>{titles.get(current.showId)} · 第 {current.season} 季第 {current.episode} 集</p>}<p>{STATUSES[current.status]}{current.year ? ` · ${current.year} 年` : ""}</p>{current.rating !== undefined && <p className="media-own-rating">我的评分 <strong>{current.rating}</strong> / 10</p>}<p className="media-muted">{current.history.length} 次有日期的观看记录</p>{current.history.length > 0 && <ul className="media-history">{[...current.history].sort((a, b) => watchTime(b.watchedAt) - watchTime(a.watchedAt)).map(event => <li key={event.id}><time dateTime={event.watchedAt}>{dateLabel(event.watchedAt)}</time></li>)}</ul>}{current.thought && <blockquote className="media-thought">{current.thought}</blockquote>}<div className="media-actions"><button type="button" className="button secondary" onClick={() => edit(current)} disabled={busy}>编辑记录与感想</button><button type="button" className="text-button" disabled={busy || (!current.thought?.trim() && current.history.length === 0 && current.status !== "watched")} onClick={() => void run(() => onRemember(current), "这份影音感受已留在人生看板。")}>留在人生看板</button></div>{current.traktUrl && <a href={current.traktUrl} target="_blank" rel="noopener noreferrer">在 Trakt 查看作品 ↗</a>}</> : <><h2>故事之外，是你的生活。</h2><p className="media-muted">选择一部作品，回看观看日期、自己的评分和留下的感想。</p></>}</aside></div>
     {recent.length > 0 && <section className="media-card media-recent"><h2>最近看过的故事</h2><ol>{recent.map(event => <li key={event.id}><time dateTime={event.watchedAt}>{dateLabel(event.watchedAt)}</time><span>{event.entry.title}</span><small>{KINDS[event.entry.kind]}</small></li>)}</ol></section>}
-    {entries.some(entry => entry.traktId && entry.kind !== "episode" && !entry.poster) && <p className="media-muted">部分记录没有海报地址。更新后重新连接 Trakt 并保存一次，可补充官方提供的海报信息；原有感想和观看记录会保留。</p>}
-    <TraktSync onImport={next => onChange(mergeMediaLibraries(library, next))}/>
+    {entries.some(entry => entry.traktId && entry.kind !== "episode" && !entry.poster) && <p className="media-muted">部分记录没有海报地址。连接 Trakt 并保存后，会随每次打开网页补充官方提供的海报信息；已连接也可点击「立即更新」。原有感想和观看记录会保留。</p>}
+    <TraktSync connection={trakt}/>
   </section>;
 }

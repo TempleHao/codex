@@ -12,6 +12,7 @@ const CLIENT_ID = "test-only-public-trakt-client-id";
 const AUTHORIZATION_CODE = "test-only-authorization-code";
 const ACCESS_TOKEN = "test-only-access-token";
 const REFRESH_TOKEN = "test-only-refresh-token";
+const FAILED_POSTER_URL = "https://walter-r2.trakt.tv/images/movies/000/012/602/posters/thumb/failed.jpg.webp";
 const ENDPOINTS = [
   "/users/me/history/movies", "/users/me/history/episodes", "/users/me/ratings/movies",
   "/users/me/ratings/shows", "/users/me/watchlist/movies", "/users/me/watchlist/shows",
@@ -19,7 +20,17 @@ const ENDPOINTS = [
 type StoredWorkspace = { version: 1; tasks: unknown[]; sources: unknown[]; batches: Record<string, unknown>; life: LifeData };
 
 const test = base.extend<{ audit: void }>({
-  audit: [async ({ page }, use) => {
+  audit: [async ({ page }, use, testInfo) => {
+    // Only this test's intentionally rejected image may fail through the worker.
+    const intentionalPosterFallback = (value: string) => {
+      if (!testInfo.title.startsWith("海报从官方来源缓存为Blob")) return false;
+      try {
+        const url = new URL(value);
+        return [APP_ORIGIN, LOCAL_ORIGIN].includes(url.origin)
+          && ["/codex/media-poster-cache", "/media-poster-cache"].includes(url.pathname)
+          && url.searchParams.get("url") === FAILED_POSTER_URL;
+      } catch { return false; }
+    };
     const forbiddenRequests: string[] = [];
     const pageErrors: string[] = [];
     const assetFailures: string[] = [];
@@ -38,16 +49,18 @@ const test = base.extend<{ audit: void }>({
       if (message.type() !== "error") return;
       // The failure case deliberately returns HTTP 500 from a mocked data endpoint.
       if (["https://api.trakt.tv/", "https://walter-r2.trakt.tv/"].some(origin => message.location().url.startsWith(origin)) && /Failed to load resource/.test(message.text())) return;
+      if (intentionalPosterFallback(message.location().url) && /Failed to load resource.*net::ERR_FAILED/.test(message.text())) return;
       pageErrors.push(message.text());
     });
     page.on("response", response => {
       if (new URL(response.url()).origin === "https://walter-r2.trakt.tv" && response.status() >= 400) rejectedPosters.add(response.url());
-      if ([APP_ORIGIN, LOCAL_ORIGIN].includes(new URL(response.url()).origin) && response.status() >= 400) assetFailures.push(`${response.status()} ${response.url()}`);
+      if ([APP_ORIGIN, LOCAL_ORIGIN].includes(new URL(response.url()).origin) && response.status() >= 400 && !intentionalPosterFallback(response.url())) assetFailures.push(`${response.status()} ${response.url()}`);
     });
     page.on("requestfailed", request => {
       // The downloader cancels an HTTP-error body; the poster test deliberately
       // returns one such response and verifies the fallback plus successful retry.
       if (rejectedPosters.has(request.url()) && request.failure()?.errorText === "net::ERR_ABORTED") return;
+      if (intentionalPosterFallback(request.url()) && request.resourceType() === "image" && request.failure()?.errorText === "net::ERR_FAILED") return;
       assetFailures.push(`${request.failure()?.errorText} ${request.url()}`);
     });
     await use();
@@ -123,6 +136,36 @@ async function expectAuthorizationCleared(page: Page, secrets: string[]) {
   expect(new URL(page.url()).searchParams.has("state")).toBe(false);
 }
 
+async function connectionRecord(page: Page) {
+  return page.evaluate(async () => new Promise<{ session: { accessToken: string; refreshToken: string; expiresAt: number }; syncedAt: string | null } | null>((resolve, reject) => {
+    const request = indexedDB.open("life-workbench-trakt-connection-v1", 1);
+    request.onsuccess = () => {
+      const db = request.result;
+      if (!db.objectStoreNames.contains("connection")) { db.close(); resolve(null); return; }
+      const tx = db.transaction("connection", "readonly");
+      const read = tx.objectStore("connection").get("active");
+      tx.oncomplete = () => { resolve(read.result ?? null); db.close(); };
+      tx.onerror = tx.onabort = () => { db.close(); reject(new Error("connection read failed")); };
+    };
+    request.onerror = () => reject(new Error("connection database unavailable"));
+  }));
+}
+async function expireConnectionSoon(page: Page) {
+  await page.evaluate(async () => new Promise<void>((resolve, reject) => {
+    const request = indexedDB.open("life-workbench-trakt-connection-v1", 1);
+    request.onsuccess = () => {
+      const db = request.result;
+      const tx = db.transaction("connection", "readwrite");
+      const store = tx.objectStore("connection");
+      const read = store.get("active");
+      read.onsuccess = () => { const record = read.result; record.session.expiresAt = Date.now() + 30_000; store.put(record, "active"); };
+      tx.oncomplete = () => { db.close(); resolve(); };
+      tx.onerror = tx.onabort = () => { db.close(); reject(new Error("connection expiry update failed")); };
+    };
+    request.onerror = () => reject(new Error("connection database unavailable"));
+  }));
+}
+
 function traktDatasets(): Record<string, unknown[]> {
   const watchedAt = "2025-12-31T18:00:00Z";
   const movie = (id: number) => ({ title: `Original movie ${id}`, year: 2025, ids: { trakt: id, slug: `movie-${id}` }, genres: ["science-fiction"], rating: 9.9, images: { poster: ["private-cdn-image.example"] } });
@@ -138,7 +181,7 @@ function traktDatasets(): Record<string, unknown[]> {
 }
 
 async function mockTrakt(page: Page) {
-  const result = { states: [] as string[], verifiers: [] as string[], challenges: [] as string[], tokenCalls: 0, apiCalls: [] as string[], badState: false, failPath: "" };
+  const result = { states: [] as string[], verifiers: [] as string[], challenges: [] as string[], tokenCalls: 0, refreshCalls: 0, accessToken: ACCESS_TOKEN, refreshToken: REFRESH_TOKEN, apiCalls: [] as string[], badState: false, failPath: "", rejectOncePath: "" };
   const cors = {
     "Access-Control-Allow-Origin": APP_ORIGIN,
     "Access-Control-Allow-Headers": "Content-Type, Authorization, trakt-api-key, trakt-api-version",
@@ -176,13 +219,23 @@ async function mockTrakt(page: Page) {
     expect(request.headers()["cookie"]).toBeUndefined();
     expect(request.headers()["referer"]).toBeUndefined();
     const body = request.postDataJSON() as Record<string, string>;
-    expect(Object.keys(body).sort()).toEqual(["client_id", "code", "code_verifier", "grant_type", "redirect_uri"]);
-    expect(body).toMatchObject({ client_id: CLIENT_ID, code: AUTHORIZATION_CODE, grant_type: "authorization_code", redirect_uri: APP_URL });
-    expect(body.code_verifier).toMatch(/^[A-Za-z0-9_-]{43}$/);
-    result.verifiers.push(body.code_verifier);
-    expect(createHash("sha256").update(body.code_verifier).digest("base64url")).toBe(result.challenges.at(-1));
-    expect(await page.evaluate(key => sessionStorage.getItem(key), TRAKT_AUTH_CONTEXT_KEY)).toBeNull();
-    await route.fulfill({ status: 200, headers: cors, contentType: "application/json", body: JSON.stringify({ access_token: ACCESS_TOKEN, refresh_token: REFRESH_TOKEN, token_type: "Bearer" }) });
+    if (body.grant_type === "refresh_token") {
+      expect(Object.keys(body).sort()).toEqual(["client_id", "grant_type", "redirect_uri", "refresh_token"]);
+      expect(body).toEqual({ client_id: CLIENT_ID, grant_type: "refresh_token", redirect_uri: APP_URL, refresh_token: result.refreshToken });
+      result.refreshCalls += 1;
+      result.accessToken = `test-only-rotated-access-${result.refreshCalls}`;
+      result.refreshToken = `test-only-rotated-refresh-${result.refreshCalls}`;
+    } else {
+      expect(Object.keys(body).sort()).toEqual(["client_id", "code", "code_verifier", "grant_type", "redirect_uri"]);
+      expect(body).toMatchObject({ client_id: CLIENT_ID, code: AUTHORIZATION_CODE, grant_type: "authorization_code", redirect_uri: APP_URL });
+      expect(body.code_verifier).toMatch(/^[A-Za-z0-9_-]{43}$/);
+      result.verifiers.push(body.code_verifier);
+      expect(createHash("sha256").update(body.code_verifier).digest("base64url")).toBe(result.challenges.at(-1));
+      expect(await page.evaluate(key => sessionStorage.getItem(key), TRAKT_AUTH_CONTEXT_KEY)).toBeNull();
+    }
+    await route.fulfill({ status: 200, headers: cors, contentType: "application/json", body: JSON.stringify({
+      access_token: result.accessToken, refresh_token: result.refreshToken, token_type: "Bearer", created_at: Math.floor(Date.now() / 1_000), expires_in: 604_800,
+    }) });
   });
   const datasets = traktDatasets();
   await page.route("https://api.trakt.tv/**", async route => {
@@ -192,15 +245,20 @@ async function mockTrakt(page: Page) {
     result.apiCalls.push(url.pathname);
     expect(ENDPOINTS.some(path => path === url.pathname)).toBe(true);
     expect(request.method()).toBe("GET");
-    expect(url.searchParams.get("extended")).toBe("full");
+    expect(url.searchParams.get("extended")).toBe("full,images");
     expect(url.searchParams.get("page")).toBe("1");
     expect(url.searchParams.get("limit")).toBe("250");
-    expect(request.headers()["authorization"]).toBe(`Bearer ${ACCESS_TOKEN}`);
+    expect(request.headers()["authorization"]).toBe(`Bearer ${result.accessToken}`);
     expect(request.headers()["trakt-api-key"]).toBe(CLIENT_ID);
     expect(request.headers()["trakt-api-version"]).toBe("2");
     expect(request.headers()["cookie"]).toBeUndefined();
     expect(request.headers()["referer"]).toBeUndefined();
     for (const secret of [ACCESS_TOKEN, REFRESH_TOKEN, AUTHORIZATION_CODE, ...result.verifiers]) expect(url.href).not.toContain(secret);
+    if (url.pathname === result.rejectOncePath) {
+      result.rejectOncePath = "";
+      await route.fulfill({ status: 401, headers: cors, contentType: "application/json", body: JSON.stringify({ error: "private-authorization-body" }) });
+      return;
+    }
     if (url.pathname === result.failPath) {
       await route.fulfill({ status: 500, headers: cors, contentType: "application/json", body: JSON.stringify({ error: `${ACCESS_TOKEN} private-server-body` }) });
       return;
@@ -276,7 +334,7 @@ test("真实浏览器 PKCE 回跳先预览后合并，旧阅读看板感想保�
   const secrets = [AUTHORIZATION_CODE, ACCESS_TOKEN, REFRESH_TOKEN, ...trakt.states, ...trakt.verifiers];
   await expectAuthorizationCleared(page, secrets);
   await page.getByRole("button", { name: "保存到影音", exact: true }).click();
-  await expect(page.locator(".trakt-sync")).toContainText("Trakt 资料已保存到影音");
+  await expect(page.locator(".trakt-sync")).toContainText("已启用每次打开网页自动更新");
   const after = await persisted(page);
   expect(after?.life.reading).toEqual(before.life.reading);
   expect(after?.life.board).toEqual(before.life.board);
@@ -300,10 +358,94 @@ test("真实浏览器 PKCE 回跳先预览后合并，旧阅读看板感想保�
   const backup = JSON.parse(backupText);
   expect(backup.life).toEqual(after?.life);
   for (const secret of [...secrets, "private-cdn-image", "9.9"]) expect(backupText).not.toContain(secret);
+  const beforeReloadCalls = trakt.apiCalls.length;
   await page.reload();
   await expect(page.getByRole("button", { name: "导出备份", exact: true })).toBeEnabled();
-  expect((await persisted(page))?.life).toEqual(after?.life);
+  await expect(page.locator(".trakt-auto-status")).toContainText("影音已自动更新");
+  expect(trakt.apiCalls.slice(beforeReloadCalls)).toEqual([...ENDPOINTS]);
+  const reloaded = await persisted(page);
+  expect(reloaded?.life.media.entries).toEqual(after?.life.media.entries);
+  expect(reloaded?.life.reading).toEqual(after?.life.reading);
+  expect(reloaded?.life.board).toEqual(after?.life.board);
+  expect(reloaded?.life.thoughts).toEqual(after?.life.thoughts);
   await expectAuthorizationCleared(page, secrets);
+});
+
+test("浏览器保存 Trakt 连接后默认人生看板自动更新，续期轮换，接口失败保留资料，断开后不再同步", async ({ page }) => {
+  test.setTimeout(90_000);
+  const before = originalState();
+  const trakt = await mockTrakt(page);
+  await openMedia(page, { https: true, seed: before });
+  await authorize(page);
+  await expect(page.getByRole("heading", { name: "已读取，等你确认", exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "保存到影音", exact: true }).click();
+  await expect(page.locator(".trakt-sync")).toContainText("已启用每次打开网页自动更新");
+  await expect.poll(async () => (await connectionRecord(page))?.session.accessToken).toBe(ACCESS_TOKEN);
+  const saved = await persisted(page);
+  const secrets = [AUTHORIZATION_CODE, ACCESS_TOKEN, REFRESH_TOKEN, ...trakt.verifiers, ...trakt.states];
+  await expectAuthorizationCleared(page, secrets);
+
+  let start = trakt.apiCalls.length;
+  await page.reload();
+  await expect(page.locator(".trakt-auto-status")).toContainText("影音已自动更新");
+  await expect(page.locator(".life-timeline-content")).toBeVisible();
+  expect(trakt.apiCalls.slice(start)).toEqual([...ENDPOINTS]);
+  expect(trakt.refreshCalls).toBe(0);
+  const autoSaved = await persisted(page);
+  expect(autoSaved?.life.media.entries).toEqual(saved?.life.media.entries);
+  expect(autoSaved?.life.reading).toEqual(before.life.reading);
+  expect(autoSaved?.life.board).toEqual(before.life.board);
+  expect(autoSaved?.life.thoughts).toEqual(before.life.thoughts);
+  expect((await connectionRecord(page))?.syncedAt).toBe(autoSaved?.life.media.syncedAt);
+
+  await expireConnectionSoon(page);
+  start = trakt.apiCalls.length;
+  await page.reload();
+  await expect(page.locator(".trakt-auto-status")).toContainText("影音已自动更新");
+  expect(trakt.refreshCalls).toBe(1);
+  expect(trakt.apiCalls.slice(start)).toEqual([...ENDPOINTS]);
+  expect((await connectionRecord(page))?.session).toMatchObject({ accessToken: trakt.accessToken, refreshToken: trakt.refreshToken });
+  expect((await connectionRecord(page))?.session.expiresAt).toBeGreaterThan(Date.now() + 600_000_000);
+  secrets.push(trakt.accessToken, trakt.refreshToken);
+  await expectAuthorizationCleared(page, secrets);
+
+  // A real API 401 forces one rotation, then retries the complete import once.
+  trakt.rejectOncePath = ENDPOINTS[0];
+  start = trakt.apiCalls.length;
+  await page.reload();
+  await expect(page.locator(".trakt-auto-status")).toContainText("影音已自动更新");
+  expect(trakt.refreshCalls).toBe(2);
+  expect(trakt.apiCalls.slice(start)).toEqual([ENDPOINTS[0], ...ENDPOINTS]);
+  secrets.push(trakt.accessToken, trakt.refreshToken);
+  const goodRaw = await rawStorage(page);
+  const goodConnection = await connectionRecord(page);
+
+  trakt.failPath = ENDPOINTS[3];
+  start = trakt.apiCalls.length;
+  await page.reload();
+  await expect(page.locator(".trakt-auto-status")).toContainText("Trakt 服务暂时无法完成请求");
+  expect(trakt.apiCalls.slice(start)).toEqual(ENDPOINTS.slice(0, 4));
+  expect(await rawStorage(page)).toBe(goodRaw);
+  expect(await connectionRecord(page)).toEqual(goodConnection);
+  await expectAuthorizationCleared(page, secrets);
+  const download = page.waitForEvent("download");
+  await page.getByRole("button", { name: "导出备份", exact: true }).click();
+  const backup = await readFile((await (await download).path())!, "utf8");
+  for (const secret of secrets) expect(backup).not.toContain(secret);
+
+  await selectView(page, "影音");
+  await expect(page.locator(".trakt-sync")).toContainText("已连接 · 每次打开网页自动更新");
+  await page.getByRole("button", { name: "断开 Trakt 连接", exact: true }).click();
+  await expect(page.locator(".trakt-sync")).toContainText("Trakt 连接已从此浏览器移除，影音记录保留");
+  expect(await connectionRecord(page)).toBeNull();
+  expect(await rawStorage(page)).toBe(goodRaw);
+  start = trakt.apiCalls.length;
+  await page.reload();
+  await expect(page.getByRole("button", { name: "导出备份", exact: true })).toBeEnabled();
+  await expect(page.locator(".trakt-auto-status")).toHaveCount(0);
+  expect(await connectionRecord(page)).toBeNull();
+  expect(trakt.apiCalls.length).toBe(start);
+  expect(await rawStorage(page)).toBe(goodRaw);
 });
 
 test("错误授权 state 不换令牌，后续接口失败不保存部分资料，原生活数据与凭据清理保持完整", async ({ page }) => {
@@ -379,16 +521,17 @@ test("390px 手机中的五个主导航排成一行，长片名与感想保存�
 });
 
 
-test("海报从官方来源缓存为Blob，同一图片不重复下载，刷新复用缓存，失败可重试且备份不含图片内容", async ({ page }) => {
+test("海报从官方来源缓存为Blob，同一图片不重复下载，刷新复用缓存，失败可重试且备份不含图片内容", async ({ page, context }) => {
   const before = originalState();
   const poster = "https://walter-r2.trakt.tv/images/movies/000/012/601/posters/thumb/e0d9dd35c5.jpg.webp";
-  const retryPoster = "https://walter-r2.trakt.tv/images/movies/000/012/602/posters/thumb/failed.jpg.webp";
+  const retryPoster = FAILED_POSTER_URL;
   before.life.media.entries[0].poster = poster;
   before.life.media.entries[1].poster = poster;
   before.life.media.entries.push({ id: "manual:retry-poster", kind: "movie", title: "可重试海报的电影", genres: [], status: "wanted", history: [], poster: retryPoster });
   const image = Buffer.from("UklGRi4AAABXRUJQVlA4ICIAAABQAQCdASoCAAMAAUAmJQBOgC6gAP7wxASMNGvr1093/cAA", "base64");
   const downloads: Record<string, number> = {};
-  await page.route("https://walter-r2.trakt.tv/**", async route => {
+  let allowRetry = false;
+  await context.route("https://walter-r2.trakt.tv/**", async route => {
     const request = route.request();
     const url = request.url();
     expect(request.resourceType()).toBe("fetch");
@@ -396,7 +539,7 @@ test("海报从官方来源缓存为Blob，同一图片不重复下载，刷新�
     expect(request.headers()["authorization"]).toBeUndefined();
     expect(request.headers()["referer"]).toBeUndefined();
     downloads[url] = (downloads[url] ?? 0) + 1;
-    if (url === retryPoster && downloads[url] === 1) {
+    if (url === retryPoster && !allowRetry) {
       await route.fulfill({ status: 500, headers: { "Access-Control-Allow-Origin": "http://127.0.0.1:3200" }, contentType: "application/json", body: "{}" });
       return;
     }
@@ -406,25 +549,28 @@ test("海报从官方来源缓存为Blob，同一图片不重复下载，刷新�
   const rawBefore = await rawStorage(page);
   const loaded = page.locator(".media-title-art img");
   await expect(loaded).toHaveCount(3); // Two cards plus the selected item's detail.
+  await page.locator(".media-title").filter({ hasText: "可重试海报的电影" }).scrollIntoViewIfNeeded();
   await expect(page.locator("[data-poster-failed]")).toHaveCount(1);
   expect(downloads[poster]).toBe(1);
-  expect(downloads[retryPoster]).toBe(1);
+  expect(downloads[retryPoster]).toBeGreaterThanOrEqual(1);
+  const failedDownloads = downloads[retryPoster];
   for (const img of await loaded.all()) {
     expect(await img.getAttribute("src")).toMatch(/^blob:/);
     await expect.poll(() => img.evaluate(node => (node as HTMLImageElement).naturalWidth)).toBe(2);
   }
   expect(await rawStorage(page)).toBe(rawBefore);
+  allowRetry = true;
   await page.getByRole("button", { name: "重试失败海报", exact: true }).click();
   await expect(page.locator("[data-poster-failed]")).toHaveCount(0);
   await expect(loaded).toHaveCount(4);
   expect(downloads[poster]).toBe(1);
-  expect(downloads[retryPoster]).toBe(2);
+  expect(downloads[retryPoster]).toBe(failedDownloads + 1);
   await page.reload();
   await expect(page.getByRole("button", { name: "导出备份", exact: true })).toBeEnabled();
   await selectView(page, "影音");
   await expect(loaded).toHaveCount(4);
   expect(downloads[poster]).toBe(1);
-  expect(downloads[retryPoster]).toBe(2);
+  expect(downloads[retryPoster]).toBe(failedDownloads + 1);
   expect(await rawStorage(page)).toBe(rawBefore);
   const download = page.waitForEvent("download");
   await page.getByRole("button", { name: "导出备份", exact: true }).click();

@@ -12,6 +12,9 @@ import ThoughtsPanel from "@/components/ThoughtsPanel";
 import LifeBoard from "@/components/LifeBoard";
 import WeReadSync from "@/components/WeReadSync";
 import MediaPanel from "@/components/MediaPanel";
+import { useTraktAutoSync } from "@/components/useTraktAutoSync";
+import { mergeMediaLibraries } from "@/lib/media";
+import { clearPosterWorkerCache } from "@/lib/poster-worker-client";
 import { clearMediaPosterCache } from "@/lib/media-posters";
 import type { MediaEntry, MediaLibrary } from "@/lib/media";
 import { MAX_BACKUP_BYTES } from "@/lib/backup";
@@ -110,6 +113,8 @@ export default function Home() {
   const restoreInput = useRef<HTMLInputElement>(null);
   const dialogRef = useRef<HTMLDivElement>(null);
 
+  const trakt = useTraktAutoSync({ ready: !loading && !loadFailed, onImport: mergeIncomingMedia });
+
   async function load() {
     setLoading(true); setLoadFailed(false); setError("");
     try {
@@ -178,6 +183,16 @@ export default function Home() {
   async function saveThoughts(next: LifeData["thoughts"]) { await saveLifeSection("thoughts", next); }
   async function saveBoard(next: LifeBoardData) { await saveLifeSection("board", next); }
   async function saveMedia(next: MediaLibrary) { await saveLifeSection("media", next); }
+  async function mergeIncomingMedia(incoming: MediaLibrary) {
+    if (lifeWorking.current || restoring || clearing) throw new Error("正在保存资料，请稍后更新。旧记录保留。");
+    lifeWorking.current = true; setLifeSaving(true);
+    try {
+      const latest = await request<LifeData>("/api/life");
+      const value = mergeMediaLibraries(latest.media, incoming);
+      const saved = await request<LifeData>("/api/life", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ section: "media", expected: latest.media, value }) });
+      setLife(saved);
+    } finally { lifeWorking.current = false; setLifeSaving(false); }
+  }
   async function rememberMedia(entry: MediaEntry) {
     const watched = [...entry.history].sort((a, b) => Date.parse(b.watchedAt.length === 10 ? `${b.watchedAt}T12:00:00+08:00` : b.watchedAt) - Date.parse(a.watchedAt.length === 10 ? `${a.watchedAt}T12:00:00+08:00` : a.watchedAt))[0]?.watchedAt;
     const text = `《${entry.title}》\n${entry.thought || "回看这部作品留下的观影记录。"}`;
@@ -258,13 +273,15 @@ export default function Home() {
     finally { setRestoring(false); if (restoreInput.current) restoreInput.current.value = ""; }
   }
   async function clearBrowserData() {
-    if (!IS_STATIC_PREVIEW || clearing || lifeWorking.current || !window.confirm("清空这个浏览器中保存的全部生活线索、经历、回顾、阅读、影音、思考与待办，以及海报缓存？此操作无法撤销。请先导出需要保留的备份；已导出的文件不会受影响。")) return;
+    if (!IS_STATIC_PREVIEW || clearing || lifeWorking.current || !window.confirm("清空这个浏览器中保存的全部生活线索、经历、回顾、阅读、影音、思考与待办、Trakt 连接及海报缓存？此操作无法撤销。请先导出需要保留的备份；已导出的文件不会受影响。")) return;
     setClearing(true); setError("");
     try {
+      await trakt.disconnect();
       await request("/api/workspace", { method: "DELETE" });
       setData(EMPTY); setLife(emptyLifeData()); setThoughtDraft(null); setDraft(null); setImportText(""); setOriginalText(""); setIncluded([]); setSample(false); batchId.current = null;
       selectView("life");
       await clearMediaPosterCache();
+      await clearPosterWorkerCache();
       setStatus("当前浏览器中的生活记录、阅读、影音、思考、待办、原文和海报缓存已清空。");
     } catch (cause) { setError(cause instanceof Error ? cause.message : "清空失败，请重试。"); }
     finally { setClearing(false); }
@@ -304,9 +321,10 @@ export default function Home() {
 
         <aside className="right-column"><section className="collection-card"><div className="collection-icon"><Icon name="spark" size={24}/></div><p className="section-kicker">日常事务收集</p><h2>想到哪里，<br/>就先说到哪里。</h2><p className="collection-description">需要处理的琐事和安排，<br/>可以通过聊天整理后放在这里。</p><ol className="collection-steps"><li><span>01</span><div>在聊天里随意说<p>像和朋友聊天，不用先整理。</p></div></li><li><span>02</span><div>让助手拆成待办<p>复制整理好的 JSON 或清单。</p></div></li><li><span>03</span><div>在这里检查、保存<p>日期、领域和细节，由你定。</p></div></li></ol><button className="button collection-action" onClick={openImport} disabled={loading || loadFailed}>导入整理结果<Icon name="arrow" size={17}/></button><p className="collection-note">不会自动读取当前聊天。</p></section><section className="small-note"><Icon name="leaf" size={18}/><p>不用给每件事都安排今天。<br/>留在收件箱，也是一种安排。</p></section></aside></div>
         </>}
+        {view !== "media" && (trakt.connected || trakt.error) && <div className="trakt-auto-status" aria-live="polite">{trakt.busy ? "正在自动更新影音…" : trakt.error || trakt.message || "Trakt 已连接，打开网页自动更新影音。"}<button type="button" className="text-button" onClick={() => selectView("media")}>查看影音</button></div>}
         {!taskView && !loading && !loadFailed && <>
           {view === "reading" && <><ReadingPanel library={life.reading} onLibraryChange={saveReading} onCreateTask={createLinkedTask} onCreateThought={input => { setThoughtDraft(input); selectView("thoughts"); }}/><WeReadSync onImport={next => saveReading(mergeReadingLibraries(life.reading, next))}/></>}
-          {view === "media" && <MediaPanel library={life.media} onChange={saveMedia} onRemember={rememberMedia}/>}
+          {view === "media" && <MediaPanel library={life.media} onChange={saveMedia} onRemember={rememberMedia} trakt={trakt}/>}
           {view === "thoughts" && <ThoughtsPanel thoughts={life.thoughts} library={life.reading} onThoughtsChange={saveThoughts} onCreateTask={createLinkedTask} initialDraft={thoughtDraft} onDraftConsumed={() => setThoughtDraft(null)}/>}
           {view === "life" && <LifeBoard board={life.board} reading={life.reading} media={life.media} thoughts={life.thoughts} today={today} onBoardChange={saveBoard} onOpenReading={() => selectView("reading")} onOpenMedia={() => selectView("media")} onOpenThoughts={() => selectView("thoughts")}/>}
         </>}

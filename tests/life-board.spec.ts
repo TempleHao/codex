@@ -227,7 +227,7 @@ test("人生线索、记录和回顾包含在完整备份里，清空后可恢�
   expect(backup.sources).toEqual([]);
   page.once("dialog", confirmation => confirmation.accept());
   await page.getByRole("button", { name: "清空浏览器数据", exact: true }).click();
-  await expect(page.locator(".feedback")).toContainText("生活记录、阅读、思考、待办和原文已清空");
+  await expect(page.locator(".feedback")).toContainText("生活记录、阅读、影音、思考、待办、原文和海报缓存已清空");
   await expect(page.locator(".life-thread-card")).toHaveCount(0);
   await expect(page.locator(".life-timeline-item")).toHaveCount(0);
   expect(await rawStorage(page)).toBeNull();

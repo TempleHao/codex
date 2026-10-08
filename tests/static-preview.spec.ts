@@ -264,6 +264,7 @@ test("阅读与思考独立保存，可选事务工具和完整备份仍可使�
   expect(backup.life).toEqual(life);
   page.once("dialog", confirmation => confirmation.accept());
   await page.getByRole("button", { name: "清空浏览器数据", exact: true }).click();
+  await expect(page.locator(".feedback")).toContainText("原文和海报缓存已清空");
   await page.getByLabel("选择完整备份文件").setInputFiles(backupPath!);
   await expect(page.getByRole("status").first()).toContainText("备份已恢复");
   expect(await savedData(page)).toEqual(saved);

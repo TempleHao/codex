@@ -5,3 +5,5 @@
 
 .media-title-art{width:68px;height:102px;overflow:hidden}.media-title-art img{width:100%;height:100%;object-fit:cover;display:block}.media-poster-unavailable{font-size:8px;color:#ecefdc;position:absolute;bottom:7px}.media-detail-poster{margin:18px 0}.media-detail-poster .media-title-art{width:132px;height:198px}.media-card header .media-actions{justify-content:flex-end}.media-card header .media-actions .text-button{font-size:11px}
 @media(max-width:640px){.media-title-art{width:100%;height:auto;aspect-ratio:2/3}.media-detail-poster .media-title-art{width:120px;height:180px}.media-card header{flex-wrap:wrap}.media-card header .media-actions{gap:12px}.media-card header .media-actions .text-button{font-size:10px}}
+
+.trakt-auto-status{display:flex;align-items:center;justify-content:space-between;gap:14px;background:#edf4e5;color:#5f784e;border-radius:10px;padding:13px 16px;margin-bottom:22px;font-size:12px;line-height:1.8}.trakt-connected{padding:14px 17px;background:#edf5e6;border-radius:10px;margin:18px 0}.trakt-connected p{font-size:12px;line-height:1.9}

@@ -12,7 +12,7 @@ const AUTH_ERROR = "临时授权信息无效或已过期，请重新连接 Trakt
 const CLIENT_ERROR = "请填写有效的 Trakt Client ID，并配置本站的 HTTPS 回调地址。";
 
 export class TraktError extends Error {
-  constructor(message: string) { super(message); this.name = "TraktError"; }
+  constructor(message: string, public readonly code?: "unauthorized" | "reauthorization" | "storage" | "refresh-lock") { super(message); this.name = "TraktError"; }
 }
 
 export interface TraktAuthorizationContext {
@@ -144,7 +144,15 @@ async function requestJson(url: string, init: RequestInit, options: TraktRequest
       ...init, signal: controller.signal, credentials: "omit", referrerPolicy: "no-referrer", cache: "no-store",
     });
     if (!response.ok) {
-      if (response.status === 401) throw new TraktError("Trakt 授权已失效，请重新连接。");
+      if (response.status === 401) throw new TraktError("Trakt 授权已失效，请重新连接。", "unauthorized");
+      if (response.status === 400 && url === `${AUTHORITY}/oauth/token`) {
+        // Inspect only the OAuth error tag; never surface server bodies or descriptions.
+        const body = await response.text();
+        if (body.length <= 8_000) {
+          try { if (JSON.parse(body)?.error === "invalid_grant") throw new TraktError("Trakt 授权已失效，请重新连接。", "reauthorization"); }
+          catch (error) { if (error instanceof TraktError) throw error; }
+        }
+      }
       if (response.status === 403) throw new TraktError("Trakt 拒绝了请求，请检查应用配置后重试。");
       if (response.status === 429) throw new TraktError("Trakt 请求过于频繁，请稍后重试。");
       throw new TraktError("Trakt 服务暂时无法完成请求，请稍后重试。");
@@ -165,7 +173,7 @@ async function requestJson(url: string, init: RequestInit, options: TraktRequest
   }
 }
 
-/** Return only the access token. The refresh token is intentionally discarded for this one-time import. */
+/** Compatibility wrapper for callers that only need an access token. */
 export async function exchangeTraktCode(
   code: string, context: TraktAuthorizationContext, options: TraktRequestOptions = {},
 ): Promise<string> {
@@ -187,6 +195,58 @@ export async function completeTraktAuthorization(
 ): Promise<{ accessToken: string; clientId: string }> {
   const { code, context } = consumeTraktCallback(callbackUrl, storage, options);
   return { accessToken: await exchangeTraktCode(code, context, options), clientId: context.clientId };
+}
+
+export interface TraktSession {
+  accessToken: string;
+  refreshToken: string;
+  /** Absolute milliseconds since epoch, derived from the server's created_at/expires_in. */
+  expiresAt: number;
+  clientId: string;
+  redirectUri: string;
+}
+export const traktSessionSchema = z.object({
+  accessToken: tokenSchema, refreshToken: tokenSchema,
+  expiresAt: z.number().int().positive().max(8_640_000_000_000_000),
+  clientId: clientIdSchema, redirectUri: redirectSchema,
+}).strict();
+const sessionResponseSchema = z.object({
+  access_token: tokenSchema, refresh_token: tokenSchema,
+  token_type: z.string().refine(type => type.toLowerCase() === "bearer"),
+  created_at: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+  expires_in: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
+});
+function sessionFromResponse(value: unknown, clientId: string, redirectUri: string, options: TraktRequestOptions): TraktSession {
+  const result = sessionResponseSchema.safeParse(value);
+  const now = options.now ?? Date.now();
+  if (!result.success || !Number.isSafeInteger(now) || now < 0) throw new TraktError("Trakt 未返回有效授权，请重新连接。");
+  const token = result.data;
+  const expiresAt = (token.created_at + token.expires_in) * 1_000;
+  const parsed = traktSessionSchema.safeParse({ accessToken: token.access_token, refreshToken: token.refresh_token, expiresAt, clientId, redirectUri });
+  if (!parsed.success || token.created_at * 1_000 > now + 60_000 || expiresAt <= now + 60_000) throw new TraktError("Trakt 未返回有效授权，请重新连接。");
+  return parsed.data;
+}
+export async function exchangeTraktSessionCode(code: string, context: TraktAuthorizationContext, options: TraktRequestOptions = {}): Promise<TraktSession> {
+  if (!tokenSchema.safeParse(code).success || !contextSchema.safeParse(context).success) throw new TraktError(AUTH_ERROR);
+  const { value } = await requestJson(`${AUTHORITY}/oauth/token`, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ client_id: context.clientId, redirect_uri: context.redirectUri, grant_type: "authorization_code", code, code_verifier: context.verifier }),
+  }, options);
+  return sessionFromResponse(value, context.clientId, context.redirectUri, options);
+}
+export async function completeTraktSessionAuthorization(callbackUrl: string, storage: TraktTemporaryStorage, options: TraktRequestOptions = {}): Promise<TraktSession> {
+  const { code, context } = consumeTraktCallback(callbackUrl, storage, options);
+  return exchangeTraktSessionCode(code, context, options);
+}
+export async function refreshTraktSession(session: TraktSession, options: TraktRequestOptions = {}): Promise<TraktSession> {
+  if (!traktSessionSchema.safeParse(session).success) throw new TraktError(AUTH_ERROR, "reauthorization");
+  const { value } = await requestJson(`${AUTHORITY}/oauth/token`, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ client_id: session.clientId, redirect_uri: session.redirectUri, grant_type: "refresh_token", refresh_token: session.refreshToken }),
+  }, options);
+  const rotated = sessionFromResponse(value, session.clientId, session.redirectUri, options);
+  if (rotated.refreshToken === session.refreshToken) throw new TraktError("Trakt 未返回有效授权，请重新连接。", "reauthorization");
+  return rotated;
 }
 
 const safeId = z.number().int().positive().max(Number.MAX_SAFE_INTEGER);
@@ -237,7 +297,7 @@ async function fetchPages<T>(
   let expected: { count: number; pages: number; limit: number } | undefined;
   for (let page = 1; ; page += 1) {
     const url = new URL(path, API_ORIGIN);
-    url.search = new URLSearchParams({ extended: "full", page: String(page), limit: String(PAGE_SIZE) }).toString();
+    url.search = new URLSearchParams({ extended: "full,images", page: String(page), limit: String(PAGE_SIZE) }).toString();
     const { value, headers } = await requestJson(url.href, {
       method: "GET", headers: { "Content-Type": "application/json", "trakt-api-key": clientId, "trakt-api-version": "2", Authorization: `Bearer ${accessToken}` },
     }, options);

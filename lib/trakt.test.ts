@@ -3,7 +3,7 @@ import {
   TRAKT_AUTH_CONTEXT_KEY, TRAKT_LOCAL_AUTH_MAX_AGE_MS, TraktError,
   clearTraktAuthorizationContext, completeTraktAuthorization, consumeTraktCallback,
   createTraktAuthorization, exchangeTraktCode, fetchTraktLibrary, saveTraktAuthorizationContext, traktPkceChallenge,
-  type TraktAuthorizationContext, type TraktTemporaryStorage,
+  completeTraktSessionAuthorization, refreshTraktSession, type TraktAuthorizationContext, type TraktTemporaryStorage,
 } from "./trakt";
 
 const NOW = Date.parse("2026-10-08T12:00:00Z");
@@ -45,7 +45,7 @@ function libraryFetch(datasets: Record<string, unknown[]> = {}, limit = 250) {
   return vi.fn<typeof fetch>(async (input, init) => {
     const url = new URL(String(input));
     expect(url.origin).toBe("https://api.trakt.tv");
-    expect(url.searchParams.get("extended")).toBe("full");
+    expect(url.searchParams.get("extended")).toBe("full,images");
     expect(url.searchParams.get("limit")).toBe("250");
     expect(init).toMatchObject({ method: "GET", credentials: "omit", referrerPolicy: "no-referrer", cache: "no-store" });
     const headers = new Headers(init?.headers);
@@ -149,6 +149,27 @@ describe("Trakt browser PKCE", () => {
   it.each([{ access_token: TOKEN, token_type: "basic" }, { access_token: "", token_type: "bearer" }, { refresh_token: TOKEN }, { access_token: "Bearer private token", token_type: "bearer" }])("rejects incomplete token responses without reflecting data", async reply => {
     const fetcher = vi.fn<typeof fetch>().mockResolvedValue(new Response(JSON.stringify(reply)));
     await expect(exchangeTraktCode("private-code", context(), { fetch: fetcher })).rejects.toThrow("Trakt 未返回有效授权，请重新连接。");
+  });
+});
+
+describe("Trakt persistent session tokens", () => {
+  const reply = (overrides: Record<string, unknown> = {}) => ({ access_token: TOKEN, refresh_token: "private-refresh", token_type: "Bearer", created_at: NOW / 1_000, expires_in: 604_800, ...overrides });
+  it("returns a full session using server timestamps and consumes callback state", async () => {
+    const temporary = storage(); saveTraktAuthorizationContext(temporary, context());
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(new Response(JSON.stringify(reply({ created_at: NOW / 1_000 - 10 }))));
+    const result = await completeTraktSessionAuthorization(callback(), temporary, { fetch: fetcher, now: NOW });
+    expect(result).toEqual({ accessToken: TOKEN, refreshToken: "private-refresh", expiresAt: NOW + 604_790_000, clientId: CLIENT, redirectUri: REDIRECT });
+    expect(temporary.values.size).toBe(0);
+    expect(String(fetcher.mock.calls[0][1]?.body)).not.toContain("client_secret");
+  });
+  it.each([{ refresh_token: undefined }, { expires_in: 0 }, { expires_in: 60 }, { created_at: NOW / 1_000 + 61 }, { expires_in: Number.MAX_SAFE_INTEGER }, { created_at: -1 }])("rejects unusable persistent sessions without leaking token data", async overrides => {
+    const temporary = storage(); saveTraktAuthorizationContext(temporary, context());
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(new Response(JSON.stringify(reply(overrides))));
+    await expect(completeTraktSessionAuthorization(callback(), temporary, { fetch: fetcher, now: NOW })).rejects.toThrow("Trakt 未返回有效授权");
+  });
+  it("rejects an unrotated refresh token", async () => {
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(new Response(JSON.stringify(reply())));
+    await expect(refreshTraktSession({ accessToken: TOKEN, refreshToken: "private-refresh", expiresAt: NOW, clientId: CLIENT, redirectUri: REDIRECT }, { fetch: fetcher, now: NOW })).rejects.toMatchObject({ code: "reauthorization" });
   });
 });
 
