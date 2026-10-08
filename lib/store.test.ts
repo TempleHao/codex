@@ -34,6 +34,15 @@ function boardLife(bookId = "board-book"): LifeData {
   data.board.reviews.push({ id: randomUUID(), date: "2026-10-07", title: "这段时间的人生回顾", noticed: "有些兴趣值得慢慢探索", changed: "不再急着给每件事安排结果", keep: "留一点空白", createdAt: "2026-10-07T15:00:00.000Z" });
   return data;
 }
+function mediaLife(bookId = "media-book"): LifeData {
+  const data = boardLife(bookId);
+  data.media.entries.push({
+    id: `movie-${bookId}`, kind: "movie", title: "一部值得回看的电影", year: 2024, genres: ["剧情"], status: "watched", rating: 8.5,
+    thought: "  看完以后想起了那次散步。\n保留感想原文。  ",
+    history: [{ id: `view-${bookId}-1`, watchedAt: "2026-10-06" }, { id: `view-${bookId}-2`, watchedAt: "2026-10-07T20:30:00+08:00" }],
+  });
+  return data;
+}
 const item: TaskInput = { title: "预约洗牙", area: "健康", notes: "先询问费用", plannedDate: "2026-10-08", dueDate: null, priority: "normal", needsClarification: ["确认医院"], sourceExcerpt: "最近想洗牙" };
 afterEach(() => {
   opened.splice(0).forEach(db => db.close());
@@ -276,14 +285,80 @@ describe("persistent life board and compatibility", () => {
   });
 });
 
+describe("persistent media and legacy backups", () => {
+  it("defaults a missing media module on read without rewriting the SQLite row or other data", () => {
+    const filename = databaseFile();
+    const original = store(filename);
+    const tasks = original.addBatch({ batchId: randomUUID(), sourceText: "影音模型之前的原话", tasks: [item] });
+    const saved = original.saveLife(boardLife());
+    close(original);
+    const raw = JSON.stringify({ reading: saved.reading, thoughts: saved.thoughts, board: saved.board });
+    const legacy = new DatabaseSync(filename);
+    try { legacy.prepare("UPDATE life_data SET data = ? WHERE id = 1").run(raw); }
+    finally { legacy.close(); }
+    const upgraded = store(filename);
+    expect(upgraded.getLife()).toEqual(saved);
+    expect(upgraded.snapshot()).toEqual(tasks);
+    const inspected = new DatabaseSync(filename);
+    try { expect(inspected.prepare("SELECT data FROM life_data WHERE id = 1").get()?.data).toBe(raw); }
+    finally { inspected.close(); }
+  });
+
+  it("preserves current media on legacy whole saves and old v1/v2 restores, with explicit clearing supported", () => {
+    const db = store();
+    const existing = db.saveLife(mediaLife());
+    const legacy = { reading: existing.reading, thoughts: existing.thoughts, board: existing.board };
+    expect(db.saveLife(legacy)).toEqual(existing);
+    const source = store();
+    const tasks = source.addBatch({ batchId: randomUUID(), sourceText: "旧备份原文", tasks: [item] });
+    expect(db.restore(tasks)).toEqual(tasks);
+    const backup = backupSchema.parse({ format: "life-workbench-backup", version: 2, exportedAt: "2026-10-07T12:00:00Z", ...tasks, life: legacy });
+    db.restore(backup);
+    expect(db.getLife()).toEqual(existing);
+    expect(db.saveLife({ ...legacy, media: emptyLifeData().media })).toEqual({ ...existing, media: emptyLifeData().media });
+    expect(db.snapshot()).toEqual(tasks);
+  });
+
+  it("round-trips media metadata, original thoughts and repeated dated viewings through reopening and complete backup", () => {
+    const filename = databaseFile();
+    const db = store(filename);
+    const tasks = db.addBatch({ batchId: randomUUID(), sourceText: "独立事务原文", tasks: [item] });
+    const saved = db.saveLife(mediaLife());
+    close(db);
+    const reopened = store(filename);
+    expect(reopened.getLife()).toEqual(saved);
+    const backup = backupSchema.parse({ format: "life-workbench-backup", version: 2, exportedAt: "2026-10-07T12:00:00Z", ...reopened.snapshot(), life: reopened.getLife() });
+    const restored = store();
+    expect(restored.restore(backup)).toEqual(tasks);
+    expect(restored.getLife()).toEqual(saved);
+    expect(restored.getLife().media.entries[0].history).toHaveLength(2);
+    expect(restored.restore(backup)).toEqual(tasks);
+    expect(restored.getLife()).toEqual(saved);
+  });
+
+  it("rolls back incoming tasks, sources and every life module on a media conflict", () => {
+    const db = store();
+    const existing = db.saveLife(mediaLife());
+    const tasks = db.addBatch({ batchId: randomUUID(), sourceText: "已有事务原文", tasks: [item] });
+    const source = store();
+    const incomingTasks = source.addBatch({ batchId: randomUUID(), sourceText: "不能部分恢复的原文", tasks: [item] });
+    const incoming = mediaLife("new-book");
+    incoming.media.entries.push({ ...existing.media.entries[0], history: [{ ...existing.media.entries[0].history[0], watchedAt: "2026-10-08" }] });
+    expect(() => db.restore({ ...incomingTasks, life: incoming })).toThrow(StoreConflict);
+    expect(db.snapshot()).toEqual(tasks);
+    expect(db.getLife()).toEqual(existing);
+    expect(db.patchLife({ section: "media", expected: existing.media, value: emptyLifeData().media }).media.entries).toEqual([]);
+  });
+});
+
 describe("atomic life module saves", () => {
-  it.each(["board", "reading", "thoughts"] as const)("rejects a stale %s snapshot across database connections without changing any record", section => {
+  it.each(["board", "reading", "thoughts", "media"] as const)("rejects a stale %s snapshot across database connections without changing any record", section => {
     const filename = databaseFile();
     const first = store(filename);
     const second = store(filename);
-    const original = first.saveLife(boardLife());
+    const original = first.saveLife(mediaLife());
     const tasks = first.addBatch({ batchId: randomUUID(), sourceText: "独立事务原文", tasks: [item] });
-    const replacement = boardLife("new-book");
+    const replacement = mediaLife("new-book");
     const saved = second.patchLife({ section, expected: original[section], value: replacement[section] });
     const inspected = new DatabaseSync(filename);
     try {
@@ -302,10 +377,11 @@ describe("atomic life module saves", () => {
     const first = store(filename);
     const second = store(filename);
     const original = first.getLife();
-    const replacement = boardLife();
+    const replacement = mediaLife();
     const tasks = second.addBatch({ batchId: randomUUID(), sourceText: "独立保留的事务", tasks: [item] });
     first.patchLife({ section: "board", expected: original.board, value: replacement.board });
     second.patchLife({ section: "reading", expected: original.reading, value: replacement.reading });
+    second.patchLife({ section: "media", expected: original.media, value: replacement.media });
     expect(first.patchLife({ section: "thoughts", expected: original.thoughts, value: replacement.thoughts })).toEqual(replacement);
     expect(second.getLife()).toEqual(replacement);
     expect(second.snapshot()).toEqual(tasks);

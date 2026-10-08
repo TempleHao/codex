@@ -73,8 +73,12 @@ export class LifeStore {
 
   saveLife(input: unknown): LifeData {
     const data = lifeDataSchema.parse(input);
-    // Older callers save reading and thoughts without a board field.
-    if (input !== null && typeof input === "object" && !Object.hasOwn(input, "board")) data.board = this.getLife().board;
+    // Older whole-document callers omit modules introduced after their saved version.
+    if (input !== null && typeof input === "object" && (!Object.hasOwn(input, "board") || !Object.hasOwn(input, "media"))) {
+      const existing = this.getLife();
+      if (!Object.hasOwn(input, "board")) data.board = existing.board;
+      if (!Object.hasOwn(input, "media")) data.media = existing.media;
+    }
     this.db.prepare("INSERT INTO life_data (id, data) VALUES (1, ?) ON CONFLICT(id) DO UPDATE SET data = excluded.data").run(JSON.stringify(data));
     return data;
   }

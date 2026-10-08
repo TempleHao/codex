@@ -11,10 +11,12 @@ import ReadingPanel, { type ReadingTaskDraft, type ReadingThoughtDraft } from "@
 import ThoughtsPanel from "@/components/ThoughtsPanel";
 import LifeBoard from "@/components/LifeBoard";
 import WeReadSync from "@/components/WeReadSync";
+import MediaPanel from "@/components/MediaPanel";
+import type { MediaEntry, MediaLibrary } from "@/lib/media";
 import { MAX_BACKUP_BYTES } from "@/lib/backup";
 
 type TaskView = "today" | "inbox" | "all" | "done";
-type View = TaskView | "reading" | "thoughts" | "life";
+type View = TaskView | "reading" | "media" | "thoughts" | "life";
 type IconName = "sun" | "inbox" | "list" | "check" | "plus" | "arrow" | "close" | "search" | "download" | "upload" | "edit" | "trash" | "leaf" | "spark" | "file" | "chevron" | "book";
 
 function Icon({ name, size = 20, className = "" }: { name: IconName; size?: number; className?: string }) {
@@ -37,7 +39,7 @@ function Icon({ name, size = 20, className = "" }: { name: IconName; size?: numb
 const EMPTY: WorkspaceData = { tasks: [], sources: [] };
 const NAV: { id: View; title: string; icon: IconName }[] = [
   { id: "life", title: "人生看板", icon: "leaf" },
-  { id: "reading", title: "阅读", icon: "book" }, { id: "thoughts", title: "思考", icon: "file" },
+  { id: "reading", title: "阅读", icon: "book" }, { id: "media", title: "影音", icon: "sun" }, { id: "thoughts", title: "思考", icon: "file" },
   { id: "all", title: "事务", icon: "list" },
 ];
 const TASK_NAV: { id: TaskView; title: string }[] = [
@@ -117,6 +119,7 @@ export default function Home() {
     finally { setLoading(false); }
   }
   useEffect(() => { setToday(chinaToday()); void load(); const timer = setInterval(() => setToday(chinaToday()), 60_000); return () => clearInterval(timer); }, []);
+  useEffect(() => { const params = new URLSearchParams(window.location.search); if (params.has("state") && (params.has("code") || params.has("error"))) setView("media"); }, []);
   useEffect(() => {
     if (!modal) return;
     const previous = document.activeElement as HTMLElement | null;
@@ -138,7 +141,7 @@ export default function Home() {
 
   const isToday = (task: Task) => task.status === "todo" && (task.plannedDate === today || Boolean(task.dueDate && task.dueDate <= today));
   const isInbox = (task: Task) => task.status === "todo" && ((!task.plannedDate && !task.dueDate) || task.needsClarification.some(item => item.trim()));
-  const counts: Record<View, number> = { today: data.tasks.filter(isToday).length, inbox: data.tasks.filter(isInbox).length, all: data.tasks.filter(t => t.status === "todo").length, done: data.tasks.filter(t => t.status === "done").length, reading: life.reading.books.length, thoughts: life.thoughts.length, life: life.board.threads.filter(thread => thread.state === "active").length };
+  const counts: Record<View, number> = { today: data.tasks.filter(isToday).length, inbox: data.tasks.filter(isInbox).length, all: data.tasks.filter(t => t.status === "todo").length, done: data.tasks.filter(t => t.status === "done").length, reading: life.reading.books.length, media: life.media.entries.filter(entry => entry.kind !== "episode").length, thoughts: life.thoughts.length, life: life.board.threads.filter(thread => thread.state === "active").length };
   const tasks = data.tasks.filter(task => view === "today" ? isToday(task) : view === "inbox" ? isInbox(task) : view === "done" ? task.status === "done" : task.status === "todo")
     .filter(task => area === "all" || task.area === area)
     .filter(task => `${task.title} ${task.notes} ${task.sourceExcerpt} ${task.needsClarification.join(" ")}`.toLocaleLowerCase().includes(search.toLocaleLowerCase()))
@@ -173,6 +176,13 @@ export default function Home() {
   async function saveReading(next: ReadingLibrary) { await saveLifeSection("reading", next); }
   async function saveThoughts(next: LifeData["thoughts"]) { await saveLifeSection("thoughts", next); }
   async function saveBoard(next: LifeBoardData) { await saveLifeSection("board", next); }
+  async function saveMedia(next: MediaLibrary) { await saveLifeSection("media", next); }
+  async function rememberMedia(entry: MediaEntry) {
+    const watched = [...entry.history].sort((a, b) => Date.parse(b.watchedAt.length === 10 ? `${b.watchedAt}T12:00:00+08:00` : b.watchedAt) - Date.parse(a.watchedAt.length === 10 ? `${a.watchedAt}T12:00:00+08:00` : a.watchedAt))[0]?.watchedAt;
+    const text = `《${entry.title}》\n${entry.thought || "回看这部作品留下的观影记录。"}`;
+    await saveBoard({ ...life.board, observations: [...life.board.observations, { id: crypto.randomUUID(), area: "影音", kind: entry.thought ? "feeling" : "experience", text: text.slice(0, 5_000), date: watched ? watched.length === 10 ? watched : chinaToday(new Date(watched)) : chinaToday(), createdAt: new Date().toISOString() }] });
+    if (text.length > 5_000) setStatus("人生看板保留前 5000 字，完整感想仍在影音记录中。");
+  }
   function editTask(task: Task) { setTaskForm({ ...task }); setEditingId(task.id); setModalError(""); setModal("edit"); }
   function readImport() {
     setModalError(""); batchId.current = null;
@@ -293,8 +303,9 @@ export default function Home() {
         </>}
         {!taskView && !loading && !loadFailed && <>
           {view === "reading" && <><ReadingPanel library={life.reading} onLibraryChange={saveReading} onCreateTask={createLinkedTask} onCreateThought={input => { setThoughtDraft(input); selectView("thoughts"); }}/><WeReadSync onImport={next => saveReading(mergeReadingLibraries(life.reading, next))}/></>}
+          {view === "media" && <MediaPanel library={life.media} onChange={saveMedia} onRemember={rememberMedia}/>}
           {view === "thoughts" && <ThoughtsPanel thoughts={life.thoughts} library={life.reading} onThoughtsChange={saveThoughts} onCreateTask={createLinkedTask} initialDraft={thoughtDraft} onDraftConsumed={() => setThoughtDraft(null)}/>}
-          {view === "life" && <LifeBoard board={life.board} reading={life.reading} thoughts={life.thoughts} today={today} onBoardChange={saveBoard} onOpenReading={() => selectView("reading")} onOpenThoughts={() => selectView("thoughts")}/>}
+          {view === "life" && <LifeBoard board={life.board} reading={life.reading} media={life.media} thoughts={life.thoughts} today={today} onBoardChange={saveBoard} onOpenReading={() => selectView("reading")} onOpenMedia={() => selectView("media")} onOpenThoughts={() => selectView("thoughts")}/>}
         </>}
         {!taskView && loading && <p className="domain-loading" role="status">正在打开你的生活记录…</p>}
         <footer className="page-footer"><span>有序 <span className="footer-dot">·</span> {IS_STATIC_PREVIEW ? "GitHub Pages 试用版" : "给生活一点空间"}</span><div><span className="storage-label">{IS_STATIC_PREVIEW ? "内容仅保存在当前浏览器" : "内容保存在当前服务器"}</span><button className="footer-button" onClick={() => void exportData()} disabled={exporting || loading || loadFailed || clearing || lifeSaving || restoring}><Icon name="download" size={14}/>{exporting ? "正在导出…" : "导出备份"}</button><button className="footer-button" onClick={() => restoreInput.current?.click()} disabled={restoring || loading || loadFailed || clearing || lifeSaving}><Icon name="upload" size={14}/>{restoring ? "正在恢复…" : "恢复备份"}</button>{IS_STATIC_PREVIEW && <button className="footer-button danger" onClick={() => void clearBrowserData()} disabled={clearing || loading || loadFailed || restoring || saving || lifeSaving}><Icon name="trash" size={14}/>{clearing ? "正在清空…" : "清空浏览器数据"}</button>}<input className="visually-hidden" type="file" ref={restoreInput} accept=".json,application/json" aria-label="选择完整备份文件" onChange={event => void restoreData(event.target.files?.[0])}/></div></footer>

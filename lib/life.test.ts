@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import { backupSchema } from "./backup";
 import { emptyLifeBoardData, emptyLifeData, lifeBoardSchema, lifeDataSchema, lifeObservationSchema, lifeReviewSchema, lifeThreadSchema, mergeLifeBackups } from "./life";
 import type { LifeBoardData, LifeData, LifeObservation, LifeReview, LifeThread } from "./life";
+import { emptyMediaLibrary } from "./media";
 
 const timestamp = "2026-10-07T12:00:00+08:00";
 const thread = (): LifeThread => ({
@@ -38,7 +39,7 @@ describe("life board schema and migration", () => {
     const existing = existingLife();
     const legacy = { reading: existing.reading, thoughts: existing.thoughts };
     const migrated = lifeDataSchema.parse(legacy);
-    expect(migrated).toEqual({ ...legacy, board: { threads: [], observations: [], reviews: [] } });
+    expect(migrated).toEqual({ ...legacy, board: { threads: [], observations: [], reviews: [] }, media: emptyMediaLibrary() });
     expect(migrated.thoughts[0].body).toBe(existing.thoughts[0].body);
     expect(migrated.reading.highlights[0].text).toBe(existing.reading.highlights[0].text);
   });
@@ -158,5 +159,41 @@ describe("life board backup merge", () => {
     const existing = existingLife();
     const migrated = lifeDataSchema.parse({ reading: existing.reading, thoughts: existing.thoughts });
     expect(mergeLifeBackups(existing, migrated)).toEqual(existing);
+  });
+});
+
+describe("media migration and backup merge", () => {
+  it("adds an independent empty media module to pre-media life data and v2 backups without changing existing modules", () => {
+    const existing = existingLife();
+    const legacy = { reading: existing.reading, thoughts: existing.thoughts, board: existing.board };
+    const migrated = lifeDataSchema.parse(legacy);
+    expect(migrated).toEqual({ ...legacy, media: emptyMediaLibrary() });
+    migrated.media.entries.push({ id: "local-movie", kind: "movie", title: "仅用于这次读取", status: "watched", genres: [], history: [] });
+    expect(lifeDataSchema.parse(legacy).media.entries).toEqual([]);
+    const backup = backupSchema.parse({ format: "life-workbench-backup", version: 2, exportedAt: timestamp, tasks: [], sources: [], life: legacy });
+    if (backup.version !== 2) throw new Error("Expected v2 fixture");
+    expect(backup.life).toEqual({ ...legacy, media: emptyMediaLibrary() });
+    expect(legacy).not.toHaveProperty("media");
+  });
+
+  it("adds distinct media entries from backups, keeps real watch histories and makes repeated recovery idempotent", () => {
+    const existing = existingLife();
+    existing.media = { version: 1, source: "trakt", syncedAt: "2026-10-08T00:30:00+08:00", entries: [{
+      id: "trakt:movie:17", traktId: 17, title: "已看电影", kind: "movie", status: "watched", genres: ["剧情"], rating: 8,
+      history: [{ id: "trakt:history:1", watchedAt: "2026-10-07" }], thought: "  感想原文\n第二行  ", traktUrl: "https://trakt.tv/movies/example",
+    }] };
+    const incoming = emptyLifeData();
+    incoming.media = { version: 1, source: "trakt", syncedAt: "2026-10-07T18:00:00Z", entries: [{
+      id: "trakt:show:17", traktId: 17, title: "还在看的剧集", kind: "show", status: "watching", genres: [], history: [],
+    }] };
+    const before = structuredClone(existing);
+    const merged = mergeLifeBackups(existing, incoming);
+    expect(merged.media.entries).toEqual([...existing.media.entries, ...incoming.media.entries]);
+    expect(merged.media.syncedAt).toBe(incoming.media.syncedAt);
+    expect(merged.media.entries.map(entry => entry.history.length)).toEqual([1, 0]);
+    expect(mergeLifeBackups(merged, incoming)).toEqual(merged);
+    const legacy = lifeDataSchema.parse({ reading: existing.reading, thoughts: existing.thoughts, board: existing.board });
+    expect(mergeLifeBackups(existing, legacy)).toEqual(existing);
+    expect(existing).toEqual(before);
   });
 });

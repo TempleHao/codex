@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { emptyReadingLibrary, readingLibrarySchema, type ReadingLibrary } from "./reading";
+import { emptyMediaLibrary, mediaLibrarySchema, type MediaLibrary } from "./media";
 import { AREAS } from "./types";
 
 const lifeAreaSchema = z.enum(AREAS);
@@ -83,17 +84,19 @@ export const lifeDataSchema = z.object({
   reading: readingLibrarySchema,
   thoughts: lifeThoughtsSchema,
   board: lifeBoardSchema.default(emptyLifeBoardData),
+  media: mediaLibrarySchema.default(emptyMediaLibrary),
 }).strict();
 // A saved source excerpt remains useful even if its book is later removed.
 export type LifeData = z.infer<typeof lifeDataSchema>;
 
-export function emptyLifeData(): LifeData { return { reading: emptyReadingLibrary(), thoughts: [], board: emptyLifeBoardData() }; }
+export function emptyLifeData(): LifeData { return { reading: emptyReadingLibrary(), thoughts: [], board: emptyLifeBoardData(), media: emptyMediaLibrary() }; }
 
 /** Save one module only if its original snapshot still matches persisted data. */
 export const lifePatchSchema = z.discriminatedUnion("section", [
   z.object({ section: z.literal("board"), expected: lifeBoardSchema, value: lifeBoardSchema }).strict(),
   z.object({ section: z.literal("reading"), expected: readingLibrarySchema, value: readingLibrarySchema }).strict(),
   z.object({ section: z.literal("thoughts"), expected: lifeThoughtsSchema, value: lifeThoughtsSchema }).strict(),
+  z.object({ section: z.literal("media"), expected: mediaLibrarySchema, value: mediaLibrarySchema }).strict(),
 ]);
 export type LifePatch = z.infer<typeof lifePatchSchema>;
 export class LifePatchConflict extends Error {}
@@ -106,7 +109,7 @@ function canonical(value: unknown): string {
 
 export function applyLifePatch(existing: LifeData, patch: LifePatch): LifeData {
   if (canonical(existing[patch.section]) !== canonical(patch.expected)) {
-    const label = { board: "人生看板", reading: "阅读记录", thoughts: "思考记录" }[patch.section];
+    const label = { board: "人生看板", reading: "阅读记录", thoughts: "思考记录", media: "影音记录" }[patch.section];
     throw new LifePatchConflict(`其他页面更新了${label}，未保存本次内容。请保留草稿，重新查看最新记录后再保存。`);
   }
   return lifeDataSchema.parse({ ...existing, [patch.section]: patch.value });
@@ -139,5 +142,11 @@ export function mergeLifeBackups(existing: LifeData, incoming: LifeData): LifeDa
     observations: merge(existing.board.observations, incoming.board.observations, "经历与发现"),
     reviews: merge(existing.board.reviews, incoming.board.reviews, "人生回顾"),
   };
-  return lifeDataSchema.parse({ reading, thoughts: merge(existing.thoughts, incoming.thoughts, "思考"), board });
+  const media: MediaLibrary = {
+    version: 1,
+    entries: merge(existing.media.entries, incoming.media.entries, "影音作品及观看记录"),
+    source: existing.media.source === "trakt" || incoming.media.source === "trakt" ? "trakt" : "manual",
+    syncedAt: [existing.media.syncedAt, incoming.media.syncedAt].filter((value): value is string => value !== null).sort((left, right) => Date.parse(left) - Date.parse(right)).at(-1) ?? null,
+  };
+  return lifeDataSchema.parse({ reading, thoughts: merge(existing.thoughts, incoming.thoughts, "思考"), board, media });
 }

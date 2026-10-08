@@ -1,0 +1,371 @@
+import { createHash } from "node:crypto";
+import { readFile } from "node:fs/promises";
+import { expect, test as base, type Page } from "@playwright/test";
+import { emptyLifeData, lifeDataSchema, type LifeData } from "../lib/life";
+import { TRAKT_AUTH_CONTEXT_KEY } from "../lib/trakt";
+
+const STORAGE_KEY = "life-workbench-preview-v1";
+const APP_URL = "https://templehao.github.io/codex/";
+const APP_ORIGIN = new URL(APP_URL).origin;
+const LOCAL_ORIGIN = "http://127.0.0.1:3200";
+const CLIENT_ID = "test-only-public-trakt-client-id";
+const AUTHORIZATION_CODE = "test-only-authorization-code";
+const ACCESS_TOKEN = "test-only-access-token";
+const REFRESH_TOKEN = "test-only-refresh-token";
+const ENDPOINTS = [
+  "/users/me/history/movies", "/users/me/history/episodes", "/users/me/ratings/movies",
+  "/users/me/ratings/shows", "/users/me/watchlist/movies", "/users/me/watchlist/shows",
+] as const;
+type StoredWorkspace = { version: 1; tasks: unknown[]; sources: unknown[]; batches: Record<string, unknown>; life: LifeData };
+
+const test = base.extend<{ audit: void }>({
+  audit: [async ({ page }, use) => {
+    const forbiddenRequests: string[] = [];
+    const pageErrors: string[] = [];
+    const assetFailures: string[] = [];
+    page.on("request", request => {
+      const url = new URL(request.url());
+      if (!["http:", "https:"].includes(url.protocol)) return;
+      const app = [APP_ORIGIN, LOCAL_ORIGIN].includes(url.origin);
+      const auth = url.origin === "https://auth.trakt.tv" && ["/oauth/authorize", "/oauth/token"].includes(url.pathname);
+      const api = url.origin === "https://api.trakt.tv" && ENDPOINTS.some(path => path === url.pathname);
+      if ((!app && !auth && !api) || (app && /(?:^|\/)api(?:\/|$)/.test(url.pathname))) forbiddenRequests.push(`${request.method()} ${url.origin}${url.pathname}`);
+    });
+    page.on("pageerror", error => pageErrors.push(error.message));
+    page.on("console", message => {
+      if (message.type() !== "error") return;
+      // The failure case deliberately returns HTTP 500 from a mocked data endpoint.
+      if (message.location().url.startsWith("https://api.trakt.tv/") && /Failed to load resource/.test(message.text())) return;
+      pageErrors.push(message.text());
+    });
+    page.on("response", response => {
+      if ([APP_ORIGIN, LOCAL_ORIGIN].includes(new URL(response.url()).origin) && response.status() >= 400) assetFailures.push(`${response.status()} ${response.url()}`);
+    });
+    page.on("requestfailed", request => assetFailures.push(`${request.failure()?.errorText} ${request.url()}`));
+    await use();
+    expect(forbiddenRequests, "影音页面只加载本站资源并使用指定的模拟 Trakt 接口").toEqual([]);
+    expect(pageErrors, "保存和授权不应产生未处理的页面错误").toEqual([]);
+    expect(assetFailures, "静态资源与授权导航应成功完成").toEqual([]);
+  }, { auto: true }],
+});
+
+function originalState(): StoredWorkspace {
+  const life = emptyLifeData();
+  const timestamp = "2025-09-01T12:00:00.000Z";
+  life.reading.books = [{ id: "kept-book", title: "以前保存的书", author: "旧作者", kind: "ebook", status: "reading", progress: 25 }];
+  life.reading.highlights = [{ id: "kept-highlight", bookId: "kept-book", text: "阅读自己的生活。" }];
+  life.thoughts = [{ id: "11111111-1111-4111-8111-111111111111", title: "独立的思考", body: "不被影音导入覆盖。", createdAt: timestamp, updatedAt: timestamp }];
+  life.board = {
+    threads: [{ id: "22222222-2222-4222-8222-222222222222", title: "保留生活里独立的兴趣", area: "阅读", kind: "interest", state: "active", description: "允许兴趣没有任务。", createdAt: timestamp, updatedAt: timestamp }],
+    observations: [{ id: "33333333-3333-4333-8333-333333333333", area: "生活", kind: "feeling", text: "从前记下的平静。", date: "2025-09-01", createdAt: timestamp }],
+    reviews: [],
+  };
+  life.media.entries = [
+    { id: "trakt:movie:1", traktId: 1, kind: "movie", title: "原来的片名", genres: [], status: "watched", rating: 6.5, thought: "我以前写下的观影感想必须保留。", history: [{ id: "manual:kept-view", watchedAt: "2024-05-06" }] },
+    { id: "manual:kept-movie", kind: "movie", title: "自己记下的旧电影", genres: [], status: "wanted", thought: "手动作品也继续保留。", history: [] },
+  ];
+  return { version: 1, tasks: [], sources: [], batches: {}, life: lifeDataSchema.parse(life) };
+}
+
+async function rawStorage(page: Page) { return page.evaluate(key => localStorage.getItem(key), STORAGE_KEY); }
+async function persisted(page: Page): Promise<StoredWorkspace | null> {
+  const raw = await rawStorage(page);
+  return raw === null ? null : JSON.parse(raw);
+}
+async function selectView(page: Page, name: string) {
+  await page.getByRole("navigation", { name: "主导航" }).getByRole("button", { name: new RegExp(`^${name}`) }).click();
+}
+async function openMedia(page: Page, options: { https?: boolean; seed?: StoredWorkspace } = {}) {
+  if (options.https) {
+    await page.route(`${APP_ORIGIN}/codex/**`, async route => {
+      const requested = new URL(route.request().url());
+      const response = await route.fetch({ url: `${LOCAL_ORIGIN}${requested.pathname}${requested.search}` });
+      await route.fulfill({ response });
+    });
+  }
+  await page.goto(options.https ? APP_URL : "./");
+  await expect(page.getByRole("button", { name: "导出备份", exact: true })).toBeEnabled();
+  if (options.seed) {
+    await page.evaluate(({ key, value }) => localStorage.setItem(key, JSON.stringify(value)), { key: STORAGE_KEY, value: options.seed });
+    await page.reload();
+    await expect(page.getByRole("button", { name: "导出备份", exact: true })).toBeEnabled();
+  }
+  await selectView(page, "影音");
+  await expect(page.getByRole("heading", { name: "看过的世界，留在生活里。", exact: true })).toBeVisible();
+}
+async function expectNoHorizontalOverflow(page: Page) {
+  const dimensions = await page.evaluate(() => ({ width: innerWidth, documentWidth: document.documentElement.scrollWidth, bodyWidth: document.body.scrollWidth }));
+  expect(dimensions.documentWidth).toBeLessThanOrEqual(dimensions.width);
+  expect(dimensions.bodyWidth).toBeLessThanOrEqual(dimensions.width);
+}
+async function expectNoTasks(page: Page) {
+  const saved = await persisted(page);
+  expect(saved?.tasks ?? []).toEqual([]);
+  expect(saved?.sources ?? []).toEqual([]);
+}
+async function expectAuthorizationCleared(page: Page, secrets: string[]) {
+  await expect(page).toHaveURL(APP_URL);
+  expect(await page.evaluate(key => sessionStorage.getItem(key), TRAKT_AUTH_CONTEXT_KEY)).toBeNull();
+  const browserValues = await page.evaluate(() => JSON.stringify({ local: { ...localStorage }, session: { ...sessionStorage } }));
+  for (const secret of secrets.filter(Boolean)) {
+    expect(page.url()).not.toContain(secret);
+    expect(browserValues).not.toContain(secret);
+  }
+  expect(new URL(page.url()).searchParams.has("code")).toBe(false);
+  expect(new URL(page.url()).searchParams.has("state")).toBe(false);
+}
+
+function traktDatasets(): Record<string, unknown[]> {
+  const watchedAt = "2025-12-31T18:00:00Z";
+  const movie = (id: number) => ({ title: `Original movie ${id}`, year: 2025, ids: { trakt: id, slug: `movie-${id}` }, genres: ["science-fiction"], rating: 9.9, images: { poster: ["private-cdn-image.example"] } });
+  const show = (id: number) => ({ title: `Original show ${id}`, year: 2024, ids: { trakt: id, slug: `show-${id}` }, genres: ["drama"] });
+  return {
+    "/users/me/history/movies": [{ id: 101, type: "movie", watched_at: watchedAt, movie: movie(1) }],
+    "/users/me/history/episodes": [{ id: 103, type: "episode", watched_at: "2026-01-01T02:30:00+09:00", episode: { title: "Original episode", ids: { trakt: 9 }, season: 1, number: 2 }, show: show(4) }],
+    "/users/me/ratings/movies": [{ type: "movie", rated_at: watchedAt, rating: 8, movie: movie(1) }, { type: "movie", rated_at: watchedAt, rating: 0, movie: movie(8) }],
+    "/users/me/ratings/shows": [{ type: "show", rated_at: watchedAt, rating: 7, show: show(4) }],
+    "/users/me/watchlist/movies": [{ id: 403, type: "movie", listed_at: watchedAt, movie: movie(3) }],
+    "/users/me/watchlist/shows": [{ id: 505, type: "show", listed_at: watchedAt, show: show(5) }],
+  };
+}
+
+async function mockTrakt(page: Page) {
+  const result = { states: [] as string[], verifiers: [] as string[], challenges: [] as string[], tokenCalls: 0, apiCalls: [] as string[], badState: false, failPath: "" };
+  const cors = {
+    "Access-Control-Allow-Origin": APP_ORIGIN,
+    "Access-Control-Allow-Headers": "Content-Type, Authorization, trakt-api-key, trakt-api-version",
+    "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+    "Access-Control-Expose-Headers": "X-Pagination-Page, X-Pagination-Limit, X-Pagination-Item-Count, X-Pagination-Page-Count",
+  };
+  await page.route("https://auth.trakt.tv/oauth/authorize**", async route => {
+    const request = route.request();
+    const url = new URL(request.url());
+    expect(request.method()).toBe("GET");
+    expect(url.searchParams.get("response_type")).toBe("code");
+    expect(url.searchParams.get("client_id")).toBe(CLIENT_ID);
+    expect(url.searchParams.get("redirect_uri")).toBe(APP_URL);
+    expect(url.searchParams.get("code_challenge_method")).toBe("S256");
+    expect(url.searchParams.has("client_secret")).toBe(false);
+    expect(url.searchParams.has("code_verifier")).toBe(false);
+    const state = url.searchParams.get("state")!;
+    const challenge = url.searchParams.get("code_challenge")!;
+    expect(state).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    expect(challenge).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    result.states.push(state); result.challenges.push(challenge);
+    const callback = new URL(APP_URL);
+    callback.search = new URLSearchParams({ code: AUTHORIZATION_CODE, state: result.badState ? `wrong-${state}` : state }).toString();
+    // Playwright only routes the first URL in an HTTP redirect chain. A fresh
+    // document navigation also intercepts the callback instead of reaching the live site.
+    await route.fulfill({ status: 200, contentType: "text/html", body: `<script>window.location.replace(${JSON.stringify(callback.href)})</script>` });
+  });
+  await page.route("https://auth.trakt.tv/oauth/token", async route => {
+    const request = route.request();
+    if (request.method() === "OPTIONS") { await route.fulfill({ status: 204, headers: cors }); return; }
+    result.tokenCalls += 1;
+    expect(request.method()).toBe("POST");
+    expect(request.headers()["content-type"]).toBe("application/json");
+    expect(request.headers()["authorization"]).toBeUndefined();
+    expect(request.headers()["cookie"]).toBeUndefined();
+    expect(request.headers()["referer"]).toBeUndefined();
+    const body = request.postDataJSON() as Record<string, string>;
+    expect(Object.keys(body).sort()).toEqual(["client_id", "code", "code_verifier", "grant_type", "redirect_uri"]);
+    expect(body).toMatchObject({ client_id: CLIENT_ID, code: AUTHORIZATION_CODE, grant_type: "authorization_code", redirect_uri: APP_URL });
+    expect(body.code_verifier).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    result.verifiers.push(body.code_verifier);
+    expect(createHash("sha256").update(body.code_verifier).digest("base64url")).toBe(result.challenges.at(-1));
+    expect(await page.evaluate(key => sessionStorage.getItem(key), TRAKT_AUTH_CONTEXT_KEY)).toBeNull();
+    await route.fulfill({ status: 200, headers: cors, contentType: "application/json", body: JSON.stringify({ access_token: ACCESS_TOKEN, refresh_token: REFRESH_TOKEN, token_type: "Bearer" }) });
+  });
+  const datasets = traktDatasets();
+  await page.route("https://api.trakt.tv/**", async route => {
+    const request = route.request();
+    if (request.method() === "OPTIONS") { await route.fulfill({ status: 204, headers: cors }); return; }
+    const url = new URL(request.url());
+    result.apiCalls.push(url.pathname);
+    expect(ENDPOINTS.some(path => path === url.pathname)).toBe(true);
+    expect(request.method()).toBe("GET");
+    expect(url.searchParams.get("extended")).toBe("full");
+    expect(url.searchParams.get("page")).toBe("1");
+    expect(url.searchParams.get("limit")).toBe("250");
+    expect(request.headers()["authorization"]).toBe(`Bearer ${ACCESS_TOKEN}`);
+    expect(request.headers()["trakt-api-key"]).toBe(CLIENT_ID);
+    expect(request.headers()["trakt-api-version"]).toBe("2");
+    expect(request.headers()["cookie"]).toBeUndefined();
+    expect(request.headers()["referer"]).toBeUndefined();
+    for (const secret of [ACCESS_TOKEN, REFRESH_TOKEN, AUTHORIZATION_CODE, ...result.verifiers]) expect(url.href).not.toContain(secret);
+    if (url.pathname === result.failPath) {
+      await route.fulfill({ status: 500, headers: cors, contentType: "application/json", body: JSON.stringify({ error: `${ACCESS_TOKEN} private-server-body` }) });
+      return;
+    }
+    const rows = datasets[url.pathname];
+    await route.fulfill({ status: 200, contentType: "application/json", headers: {
+      ...cors, "X-Pagination-Page": "1", "X-Pagination-Limit": "250",
+      "X-Pagination-Item-Count": String(rows.length), "X-Pagination-Page-Count": String(Math.ceil(rows.length / 250)),
+    }, body: JSON.stringify(rows) });
+  });
+  return result;
+}
+async function authorize(page: Page) {
+  await page.getByRole("textbox", { name: "Trakt Client ID", exact: true }).fill(CLIENT_ID);
+  await page.getByRole("button", { name: "跳转 Trakt 授权", exact: true }).click();
+}
+
+test("手动电影保存本人评分和感想，只有实际观看日期形成足迹，人生记忆由明确操作留下", async ({ page }) => {
+  await openMedia(page);
+  const title = "重看一部让我平静的电影";
+  const thought = "以前注意情节，现在更在意人物怎样与自己相处。\n这段感受可以独立留下。";
+  await page.getByRole("button", { name: "记一部作品", exact: true }).click();
+  const form = page.getByRole("form", { name: "影音记录表单", exact: true });
+  await form.getByRole("textbox", { name: "片名", exact: true }).fill(title);
+  await form.getByRole("combobox", { name: "观看状态", exact: true }).selectOption("watched");
+  await form.getByRole("spinbutton", { name: "我的评分", exact: true }).fill("8.5");
+  await form.getByRole("textbox", { name: "我的感想", exact: true }).fill(thought);
+  await form.getByRole("button", { name: "保存影音记录", exact: true }).click();
+  await expect(form).not.toBeVisible();
+  const statusOnly = await persisted(page);
+  expect(statusOnly?.life.media.entries[0]).toMatchObject({ title, kind: "movie", status: "watched", rating: 8.5, thought, history: [] });
+  expect(statusOnly?.life.board.observations).toEqual([]);
+  await expect(page.getByLabel("影音概览")).toContainText("有日期的观看0次");
+  await page.getByRole("button", { name: "编辑记录与感想", exact: true }).click();
+  await expect(form.getByRole("textbox", { name: "我的感想", exact: true })).toHaveValue(thought);
+  await form.getByLabel(/^追加一次观看日期/).fill("2025-06-18");
+  await form.getByRole("button", { name: "保存影音记录", exact: true }).click();
+  await expect(form).not.toBeVisible();
+  const dated = await persisted(page);
+  expect(dated?.life.media.entries[0].history).toHaveLength(1);
+  expect(dated?.life.media.entries[0].history[0].watchedAt).toBe("2025-06-18");
+  expect(dated?.life.board.observations).toEqual([]);
+  await expect(page.getByRole("img", { name: /^2025年各月观看次数/ })).toHaveAttribute("aria-label", /6月1次/);
+  await expectNoTasks(page);
+  await page.getByRole("button", { name: "留在人生看板", exact: true }).click();
+  await expect(page.locator(".media-panel")).toContainText("这份影音感受已留在人生看板");
+  const remembered = await persisted(page);
+  expect(remembered?.life.board.observations).toHaveLength(1);
+  expect(remembered?.life.board.observations[0]).toMatchObject({ area: "影音", kind: "feeling", date: "2025-06-18", text: `《${title}》\n${thought}` });
+  expect(remembered?.life.media).toEqual(dated?.life.media);
+  await page.reload();
+  await expect(page.getByRole("button", { name: "导出备份", exact: true })).toBeEnabled();
+  await expect(page.locator(".life-timeline-content")).toContainText(thought);
+  await selectView(page, "影音");
+  await expect(page.getByLabel("影音详情")).toContainText(title);
+  await expect(page.locator(".media-thought")).toHaveText(thought);
+  expect((await persisted(page))?.life).toEqual(remembered?.life);
+  await expectNoTasks(page);
+});
+
+test("真实浏览器 PKCE 回跳先预览后合并，旧阅读看板感想保留且临时凭据不进入网址、存储或备份", async ({ page }) => {
+  test.setTimeout(60_000);
+  const before = originalState();
+  const trakt = await mockTrakt(page);
+  await openMedia(page, { https: true, seed: before });
+  const rawBefore = await rawStorage(page);
+  await authorize(page);
+  await expect(page.getByRole("heading", { name: "已读取，等你确认", exact: true })).toBeVisible();
+  expect(trakt.tokenCalls).toBe(1);
+  expect(trakt.apiCalls).toEqual([...ENDPOINTS]);
+  expect(await rawStorage(page)).toBe(rawBefore);
+  await expect(page.locator(".trakt-preview")).toContainText("6 个作品条目 · 2 次有日期的观看 · 3 项本人评分");
+  const secrets = [AUTHORIZATION_CODE, ACCESS_TOKEN, REFRESH_TOKEN, ...trakt.states, ...trakt.verifiers];
+  await expectAuthorizationCleared(page, secrets);
+  await page.getByRole("button", { name: "保存到影音", exact: true }).click();
+  await expect(page.locator(".trakt-sync")).toContainText("Trakt 资料已保存到影音");
+  const after = await persisted(page);
+  expect(after?.life.reading).toEqual(before.life.reading);
+  expect(after?.life.board).toEqual(before.life.board);
+  expect(after?.life.thoughts).toEqual(before.life.thoughts);
+  expect(after?.life.media.entries).toHaveLength(7);
+  expect(after?.life.media.entries.find(entry => entry.id === "manual:kept-movie")).toEqual(before.life.media.entries[1]);
+  const mergedMovie = after?.life.media.entries.find(entry => entry.id === "trakt:movie:1");
+  expect(mergedMovie).toMatchObject({ title: "Original movie 1", rating: 8, thought: before.life.media.entries[0].thought, status: "watched", history: [{ id: "manual:kept-view", watchedAt: "2024-05-06" }, { id: "trakt:history:101", watchedAt: "2025-12-31T18:00:00Z" }] });
+  expect(after?.life.media.entries.find(entry => entry.id === "trakt:show:4")).toMatchObject({ status: "unclassified", rating: 7, history: [] });
+  expect(after?.life.media.entries.find(entry => entry.id === "trakt:episode:9")).toMatchObject({ showId: "trakt:show:4", season: 1, episode: 2, status: "watched" });
+  expect(after?.life.media.entries.find(entry => entry.id === "trakt:movie:8")).toMatchObject({ rating: 0, status: "unclassified", history: [] });
+  // The episode's written date is later, but its offset makes the movie the newer viewing.
+  await expect(page.locator(".media-recent li").first()).toContainText("Original movie 1");
+  await expectNoTasks(page);
+  await expectAuthorizationCleared(page, secrets);
+  const downloadPromise = page.waitForEvent("download");
+  await page.getByRole("button", { name: "导出备份", exact: true }).click();
+  const filename = await (await downloadPromise).path();
+  expect(filename).not.toBeNull();
+  const backupText = await readFile(filename!, "utf8");
+  const backup = JSON.parse(backupText);
+  expect(backup.life).toEqual(after?.life);
+  for (const secret of [...secrets, "private-cdn-image", "9.9"]) expect(backupText).not.toContain(secret);
+  await page.reload();
+  await expect(page.getByRole("button", { name: "导出备份", exact: true })).toBeEnabled();
+  expect((await persisted(page))?.life).toEqual(after?.life);
+  await expectAuthorizationCleared(page, secrets);
+});
+
+test("错误授权 state 不换令牌，后续接口失败不保存部分资料，原生活数据与凭据清理保持完整", async ({ page }) => {
+  test.setTimeout(60_000);
+  const trakt = await mockTrakt(page);
+  trakt.badState = true;
+  await openMedia(page, { https: true, seed: originalState() });
+  const before = await rawStorage(page);
+  await authorize(page);
+  await expect(page.locator(".trakt-sync").getByRole("alert")).toContainText("临时授权信息无效或已过期");
+  expect(trakt.tokenCalls).toBe(0);
+  expect(trakt.apiCalls).toEqual([]);
+  expect(await rawStorage(page)).toBe(before);
+  await expect(page.getByRole("button", { name: "保存到影音", exact: true })).toHaveCount(0);
+  await expectAuthorizationCleared(page, [AUTHORIZATION_CODE, ...trakt.states]);
+
+  trakt.badState = false;
+  trakt.failPath = "/users/me/ratings/shows";
+  await authorize(page);
+  const error = page.locator(".trakt-sync").getByRole("alert");
+  await expect(error).toContainText("Trakt 服务暂时无法完成请求");
+  await expect(error).not.toContainText(ACCESS_TOKEN);
+  await expect(error).not.toContainText("private-server-body");
+  expect(trakt.tokenCalls).toBe(1);
+  expect(trakt.apiCalls).toEqual(ENDPOINTS.slice(0, 4));
+  expect(await rawStorage(page)).toBe(before);
+  await expect(page.getByRole("button", { name: "保存到影音", exact: true })).toHaveCount(0);
+  await expectAuthorizationCleared(page, [AUTHORIZATION_CODE, ACCESS_TOKEN, REFRESH_TOKEN, ...trakt.states, ...trakt.verifiers]);
+  await page.reload();
+  await expect(page.getByRole("button", { name: "导出备份", exact: true })).toBeEnabled();
+  expect(await rawStorage(page)).toBe(before);
+});
+
+test("390px 手机中的五个主导航排成一行，长片名与感想保存回看时没有横向溢出", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await openMedia(page);
+  const navigation = page.getByRole("navigation", { name: "主导航" });
+  await expect(navigation.getByRole("button")).toHaveCount(5);
+  const buttons = await navigation.getByRole("button").all();
+  const bounds = await Promise.all(buttons.map(button => button.boundingBox()));
+  expect(bounds.every(bound => bound !== null)).toBe(true);
+  const top = bounds[0]!.y;
+  for (const bound of bounds) {
+    expect(Math.abs(bound!.y - top)).toBeLessThanOrEqual(1);
+    expect(bound!.x).toBeGreaterThanOrEqual(0);
+    expect(bound!.x + bound!.width).toBeLessThanOrEqual(390);
+  }
+  for (const name of ["人生看板", "阅读", "影音", "思考", "事务"]) await expect(navigation.getByRole("button", { name: new RegExp(`^${name}`) })).toBeVisible();
+  await expectNoHorizontalOverflow(page);
+  await page.getByRole("button", { name: "记一部作品", exact: true }).click();
+  const form = page.getByRole("form", { name: "影音记录表单", exact: true });
+  const title = `一部很长名字的电影${"long_title_".repeat(35)}`;
+  const thought = `故事留下的感受：\n${"允许记忆有自己的节奏。".repeat(100)}\n${"b".repeat(2200)}`;
+  await form.getByRole("textbox", { name: "片名", exact: true }).fill(title);
+  await form.getByRole("textbox", { name: "我的感想", exact: true }).fill(thought);
+  await form.getByRole("spinbutton", { name: "我的评分", exact: true }).fill("0");
+  await expectNoHorizontalOverflow(page);
+  await form.getByRole("button", { name: "保存影音记录", exact: true }).click();
+  await expect(form).not.toBeVisible();
+  await expectNoHorizontalOverflow(page);
+  expect((await persisted(page))?.life.media.entries[0]).toMatchObject({ title, thought, rating: 0, status: "wanted", history: [] });
+  await page.getByRole("button", { name: "编辑记录与感想", exact: true }).click();
+  await expect(form.getByRole("textbox", { name: "我的感想", exact: true })).toHaveValue(thought);
+  await expectNoHorizontalOverflow(page);
+  await form.getByRole("button", { name: "取消", exact: true }).click();
+  await page.reload();
+  await expect(page.getByRole("button", { name: "导出备份", exact: true })).toBeEnabled();
+  await selectView(page, "影音");
+  await expect(page.locator(".media-thought")).toHaveText(thought);
+  await expectNoHorizontalOverflow(page);
+  await expectNoTasks(page);
+  await page.screenshot({ path: "/tmp/life-media-mobile.png", fullPage: true });
+});

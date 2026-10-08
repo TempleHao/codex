@@ -104,8 +104,11 @@ export class BrowserStore {
   saveLife(input: unknown): LifeData {
     const life = validate(lifeDataSchema, input);
     const state = this.read();
-    // Older callers save reading and thoughts without a board field.
-    if (input !== null && typeof input === "object" && !Object.hasOwn(input, "board")) life.board = state.life.board;
+    // Older whole-document callers omit modules introduced after their saved version.
+    if (input !== null && typeof input === "object") {
+      if (!Object.hasOwn(input, "board")) life.board = state.life.board;
+      if (!Object.hasOwn(input, "media")) life.media = state.life.media;
+    }
     state.life = life;
     this.write(state);
     return life;

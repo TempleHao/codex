@@ -55,6 +55,16 @@ function boardLife(bookId = "board-book"): LifeData {
   return data;
 }
 
+function mediaLife(bookId = "media-book"): LifeData {
+  const data = boardLife(bookId);
+  data.media.entries.push({
+    id: `movie-${bookId}`, kind: "movie", title: "一部值得回看的电影", year: 2024, genres: ["剧情"],
+    status: "watched", rating: 8.5, thought: "  看完以后想起了那次散步。\n保留感想原文。  ",
+    history: [{ id: `view-${bookId}-1`, watchedAt: "2026-10-06" }, { id: `view-${bookId}-2`, watchedAt: "2026-10-07T20:30:00+08:00" }],
+  });
+  return data;
+}
+
 afterEach(() => { vi.unstubAllEnvs(); vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 
 describe("浏览器独立存储", () => {
@@ -599,13 +609,108 @@ describe("静态站点 request", () => {
   });
 });
 
+describe("浏览器影音持久化与备份兼容", () => {
+  it("缺少影音的旧本地数据只在内存补默认值，保留其余模块、原文和批次", () => {
+    const storage = new FakeStorage();
+    const store = new BrowserStore(storage);
+    const input = batch(["迁移前事务"], "迁移前原话");
+    const tasks = store.addBatch(input);
+    const saved = store.saveLife(boardLife());
+    const legacy = JSON.parse(storage.getItem(BROWSER_STORAGE_KEY)!);
+    delete legacy.life.media;
+    const raw = JSON.stringify(legacy);
+    storage.setItem(BROWSER_STORAGE_KEY, raw);
+    const writes = storage.writes;
+    const upgraded = new BrowserStore(storage);
+    expect(upgraded.getLife()).toEqual(saved);
+    expect(upgraded.snapshot()).toEqual(tasks);
+    expect(upgraded.addBatch(input)).toEqual(tasks);
+    expect(upgraded.exportBackup()).toMatchObject({ life: saved });
+    expect(storage.writes).toBe(writes);
+    expect(storage.getItem(BROWSER_STORAGE_KEY)).toBe(raw);
+    expect(BROWSER_STORAGE_KEY).toBe("life-workbench-preview-v1");
+  });
+
+  it("旧完整保存保留现有影音，明确给空影音才清空，并且不改变其余模块", () => {
+    const store = new BrowserStore(new FakeStorage());
+    const existing = store.saveLife(mediaLife());
+    const legacy = { reading: existing.reading, thoughts: existing.thoughts, board: existing.board };
+    expect(store.saveLife(legacy)).toEqual(existing);
+    expect(store.saveLife({ ...legacy, media: emptyLifeData().media })).toEqual({ ...existing, media: emptyLifeData().media });
+  });
+
+  it("完整备份保留电影、剧集、单集、真实观看次数和感想，跨浏览器恢复与重试幂等", () => {
+    const source = new BrowserStore(new FakeStorage());
+    const tasks = source.addBatch(batch(["备份里独立的事务"], "原始聊天原文"));
+    const data = mediaLife();
+    data.media.source = "trakt";
+    data.media.syncedAt = "2026-10-07T21:00:00+08:00";
+    data.media.entries.push(
+      { id: "trakt:show:71", traktId: 71, kind: "show", title: "一部剧集", year: 2025, genres: ["剧情"], status: "watching", history: [], traktUrl: "https://trakt.tv/shows/a-show" },
+      { id: "trakt:episode:71", traktId: 71, kind: "episode", title: "第一集", genres: [], status: "watched", rating: 0, showId: "trakt:show:71", season: 1, episode: 1,
+        history: [{ id: "trakt:history:91", watchedAt: "2026-10-07T13:00:00Z" }], traktUrl: "https://trakt.tv/shows/a-show/seasons/1/episodes/1", thought: "\n 原话 \n" },
+    );
+    const saved = source.saveLife(data);
+    const backup = source.exportBackup();
+    expect(backup).toMatchObject({ version: 2, life: saved, ...tasks });
+    const restored = new BrowserStore(new FakeStorage());
+    expect(restored.restore(backup)).toEqual(tasks);
+    expect(restored.getLife()).toEqual(saved);
+    expect(restored.getLife().media.entries.map(entry => entry.history.length)).toEqual([2, 0, 1]);
+    expect(restored.restore(backup)).toEqual(tasks);
+    expect(restored.getLife()).toEqual(saved);
+  });
+
+  it("恢复旧v1和缺影音v2备份保留现有影音，并拒绝冲突备份的所有新内容", () => {
+    const storage = new FakeStorage();
+    const store = new BrowserStore(storage);
+    const existing = store.saveLife(mediaLife());
+    const source = new BrowserStore(new FakeStorage());
+    source.addBatch(batch(["旧备份事务"], "旧备份原话"));
+    const sourceLife = source.saveLife(boardLife("old-backup-book"));
+    const oldV2 = { ...source.exportBackup(), life: { reading: sourceLife.reading, thoughts: sourceLife.thoughts, board: sourceLife.board } };
+    store.restore(oldV2);
+    expect(store.getLife().media).toEqual(existing.media);
+    store.restore({ format: "life-workbench-backup", version: 1, exportedAt: oldV2.exportedAt, ...source.snapshot() });
+    expect(store.getLife().media).toEqual(existing.media);
+    const before = store.getLife();
+    const tasks = store.snapshot();
+    const incoming = mediaLife("should-not-restore");
+    incoming.media.entries.push({ ...existing.media.entries[0], thought: "冲突的新感想" });
+    const another = new BrowserStore(new FakeStorage());
+    another.addBatch(batch(["不能部分恢复"], "不能部分恢复的原话"));
+    const raw = storage.getItem(BROWSER_STORAGE_KEY);
+    const writes = storage.writes;
+    expect(() => store.restore({ ...another.exportBackup(), life: incoming })).toThrow("冲突");
+    expect(storage.writes).toBe(writes);
+    expect(storage.getItem(BROWSER_STORAGE_KEY)).toBe(raw);
+    expect(store.getLife()).toEqual(before);
+    expect(store.snapshot()).toEqual(tasks);
+  });
+
+  it("无效影音PATCH和配额失败均不写入，配额恢复后能用相同快照重试", () => {
+    const storage = new FakeStorage();
+    const store = new BrowserStore(storage);
+    const existing = store.saveLife(mediaLife());
+    const raw = storage.getItem(BROWSER_STORAGE_KEY);
+    const patch = { section: "media", expected: existing.media, value: { ...existing.media, entries: [{ ...existing.media.entries[0], rating: 9 }] } };
+    expect(() => store.patchLife({ ...patch, value: { ...patch.value, entries: [{ ...patch.value.entries[0], rating: 11 }] } })).toThrow("内容格式有误");
+    storage.failWrite = "quota";
+    expect(() => store.patchLife(patch)).toThrow("内容没有保存");
+    expect(storage.getItem(BROWSER_STORAGE_KEY)).toBe(raw);
+    expect(store.getLife()).toEqual(existing);
+    storage.failWrite = null;
+    expect(store.handleRequest("/api/life", jsonOptions(patch, "PATCH"))).toEqual({ ...existing, media: patch.value });
+  });
+});
+
 describe("人生模块快照保存", () => {
-  it.each(["board", "reading", "thoughts"] as const)("%s 在另一标签页更新后拒绝旧快照，原数据和写入次数不变", section => {
+  it.each(["board", "reading", "thoughts", "media"] as const)("%s 在另一标签页更新后拒绝旧快照，原数据和写入次数不变", section => {
     const storage = new FakeStorage();
     const firstTab = new BrowserStore(storage);
     const secondTab = new BrowserStore(storage);
-    const original = firstTab.saveLife(boardLife());
-    const replacement = boardLife("new-book");
+    const original = firstTab.saveLife(mediaLife());
+    const replacement = mediaLife("new-book");
     const saved = secondTab.patchLife({ section, expected: original[section], value: replacement[section] });
     const raw = storage.getItem(BROWSER_STORAGE_KEY);
     const writes = storage.writes;
@@ -615,15 +720,16 @@ describe("人生模块快照保存", () => {
     expect(firstTab.getLife()).toEqual(saved);
   });
 
-  it("不同模块使用同一旧快照交错保存，保留最新人生板、阅读、思考与事务", () => {
+  it("不同模块使用同一旧快照交错保存，保留最新人生板、阅读、思考、影音与事务", () => {
     const storage = new FakeStorage();
     const firstTab = new BrowserStore(storage);
     const secondTab = new BrowserStore(storage);
     const original = firstTab.getLife();
-    const replacement = boardLife();
+    const replacement = mediaLife();
     const tasks = secondTab.addBatch(batch(["与人生记录独立的事务"]));
     firstTab.patchLife({ section: "board", expected: original.board, value: replacement.board });
     secondTab.patchLife({ section: "reading", expected: original.reading, value: replacement.reading });
+    secondTab.patchLife({ section: "media", expected: original.media, value: replacement.media });
     const saved = firstTab.patchLife({ section: "thoughts", expected: original.thoughts, value: replacement.thoughts });
     expect(saved).toEqual(replacement);
     expect(secondTab.getLife()).toEqual(replacement);
@@ -695,15 +801,17 @@ describe("人生模块快照保存", () => {
     vi.resetModules();
     const { request } = await import("./client");
     const original = emptyLifeData();
-    const replacement = boardLife();
+    const replacement = mediaLife();
     const boardSave = request<LifeData>("/api/life", jsonOptions({ section: "board", expected: original.board, value: replacement.board }, "PATCH"));
     const readingSave = request<LifeData>("/api/life", jsonOptions({ section: "reading", expected: original.reading, value: replacement.reading }, "PATCH"));
+    const mediaSave = request<LifeData>("/api/life", jsonOptions({ section: "media", expected: original.media, value: replacement.media }, "PATCH"));
     expect(storage.writes).toBe(0);
     expect(await request("/api/life")).toEqual(original);
-    expect(lockRequest).toHaveBeenCalledTimes(2);
+    expect(lockRequest).toHaveBeenCalledTimes(3);
     release();
     await boardSave;
-    expect(await readingSave).toEqual({ ...replacement, thoughts: [] });
+    expect(await readingSave).toEqual({ ...replacement, thoughts: [], media: original.media });
+    expect(await mediaSave).toEqual({ ...replacement, thoughts: [] });
     expect(lockRequest.mock.calls.every(([key]) => key === BROWSER_STORAGE_KEY)).toBe(true);
 
     const edits = [
@@ -712,7 +820,7 @@ describe("人生模块快照保存", () => {
     ];
     const results = await Promise.allSettled(edits);
     expect(results.map(result => result.status)).toEqual(["fulfilled", "rejected"]);
-    expect(storage.writes).toBe(3);
+    expect(storage.writes).toBe(4);
     expect((await request<LifeData>("/api/life")).board.reviews).toEqual([]);
     expect(fetchSpy).not.toHaveBeenCalled();
   });

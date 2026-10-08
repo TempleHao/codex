@@ -105,11 +105,11 @@ async function createReview(page: Page, title: string, answers: { noticed: strin
   await expect(dialog).not.toBeVisible();
 }
 
-test("首页以人生看板开始，主导航区分阅读、思考与事务，浏览不会创建待办", async ({ page }) => {
+test("首页以人生看板开始，主导航区分阅读、影音、思考与事务，浏览不会创建待办", async ({ page }) => {
   await openBoard(page);
   const navigation = page.getByRole("navigation", { name: "主导航" });
-  await expect(navigation.getByRole("button")).toHaveCount(4);
-  for (const name of ["人生看板", "阅读", "思考", "事务"]) {
+  await expect(navigation.getByRole("button")).toHaveCount(5);
+  for (const name of ["人生看板", "阅读", "影音", "思考", "事务"]) {
     await expect(navigation.getByRole("button", { name: new RegExp(`^${name}`) })).toBeVisible();
   }
   await expect(page.getByRole("button", { name: "收集待办", exact: true })).not.toBeVisible();
@@ -358,6 +358,10 @@ test("两个标签页分别保存经历与思考时互相保留，旧看板修�
     ]);
     await expect(boardDialog).not.toBeVisible();
     await expect(otherPage.getByRole("article", { name: thoughtTitle, exact: true })).toBeVisible();
+    // Each renderer sees another tab's localStorage change asynchronously.
+    // Wait for both confirmed saves to be visible before taking the snapshot;
+    // a lost write will still fail this assertion.
+    await expect.poll(async () => (await persisted(page))?.life.thoughts.length).toBe(1);
     const saved = await persisted(page);
     expect(saved?.life.board.observations).toHaveLength(1);
     expect(saved?.life.board.observations[0]).toMatchObject({ text: experience, date: "2026-10-06", kind: "experience" });
