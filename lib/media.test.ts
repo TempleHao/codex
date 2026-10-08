@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { emptyMediaLibrary, mediaEntrySchema, mediaLibrarySchema, mergeMediaLibraries, parseMediaImport, traktMediaId } from "./media";
+import { emptyMediaLibrary, mediaEntrySchema, mediaLibrarySchema, mergeMediaLibraries, normalizeMediaPoster, parseMediaImport, traktMediaId } from "./media";
 import type { MediaEntry, MediaLibrary } from "./media";
 
 const movie = (overrides: Partial<MediaEntry> = {}): MediaEntry => ({
@@ -18,6 +18,17 @@ const library = (entries: MediaEntry[] = [movie()], overrides: Partial<MediaLibr
 const watched = (id: string, watchedAt = "2026-10-07T12:00:00+08:00") => ({ id, watchedAt });
 
 describe("portable media imports", () => {
+  it("accepts documented HTTPS poster sources and rejects arbitrary image origins", () => {
+    const path = "walter-r2.trakt.tv/images/movies/000/012/601/posters/thumb/e0d9dd35c5.jpg.webp";
+    const poster = `https://${path}`;
+    expect(normalizeMediaPoster(path)).toBe(poster);
+    expect(normalizeMediaPoster(poster)).toBe(poster);
+    expect(parseMediaImport(library([movie({ poster })])).entries[0].poster).toBe(poster);
+    for (const invalid of ["http://" + path, "https://evil.test/image.webp", poster + "?token=private", poster + "#fragment", poster.replace("trakt.tv", "trakt.tv.evil.test"), poster.replace("https://", "https://password@"), "data:image/svg+xml,<svg/>"]) {
+      expect(normalizeMediaPoster(invalid)).toBeUndefined();
+      expect(mediaEntrySchema.safeParse(movie({ poster: invalid })).success).toBe(false);
+    }
+  });
   it("starts with an independent empty manual library", () => {
     const first = emptyMediaLibrary();
     expect(first).toEqual({ version: 1, source: "manual", syncedAt: null, entries: [] });

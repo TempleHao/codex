@@ -12,6 +12,7 @@ import ThoughtsPanel from "@/components/ThoughtsPanel";
 import LifeBoard from "@/components/LifeBoard";
 import WeReadSync from "@/components/WeReadSync";
 import MediaPanel from "@/components/MediaPanel";
+import { clearMediaPosterCache } from "@/lib/media-posters";
 import type { MediaEntry, MediaLibrary } from "@/lib/media";
 import { MAX_BACKUP_BYTES } from "@/lib/backup";
 
@@ -257,12 +258,14 @@ export default function Home() {
     finally { setRestoring(false); if (restoreInput.current) restoreInput.current.value = ""; }
   }
   async function clearBrowserData() {
-    if (!IS_STATIC_PREVIEW || clearing || lifeWorking.current || !window.confirm("清空这个浏览器中保存的全部生活线索、经历、回顾、阅读、思考与待办？此操作无法撤销。请先导出需要保留的备份；已导出的文件不会受影响。")) return;
+    if (!IS_STATIC_PREVIEW || clearing || lifeWorking.current || !window.confirm("清空这个浏览器中保存的全部生活线索、经历、回顾、阅读、影音、思考与待办，以及海报缓存？此操作无法撤销。请先导出需要保留的备份；已导出的文件不会受影响。")) return;
     setClearing(true); setError("");
     try {
       await request("/api/workspace", { method: "DELETE" });
       setData(EMPTY); setLife(emptyLifeData()); setThoughtDraft(null); setDraft(null); setImportText(""); setOriginalText(""); setIncluded([]); setSample(false); batchId.current = null;
-      selectView("life"); setStatus("当前浏览器中的生活记录、阅读、思考、待办和原文已清空。");
+      selectView("life");
+      await clearMediaPosterCache();
+      setStatus("当前浏览器中的生活记录、阅读、影音、思考、待办、原文和海报缓存已清空。");
     } catch (cause) { setError(cause instanceof Error ? cause.message : "清空失败，请重试。"); }
     finally { setClearing(false); }
   }

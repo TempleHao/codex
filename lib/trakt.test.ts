@@ -153,6 +153,27 @@ describe("Trakt browser PKCE", () => {
 });
 
 describe("Trakt complete read-only library imports", () => {
+  it("retains safe movie posters across metadata updates and gives episodes their show's poster", async () => {
+    const path = "walter-r2.trakt.tv/images/movies/000/012/601/posters/thumb/e0d9dd35c5.jpg.webp";
+    const poster = `https://${path}`;
+    const episode = historyEpisode();
+    const fetcher = libraryFetch({
+      "/users/me/history/movies": [{ ...historyMovie(), movie: movie(1, { images: { poster: ["https://evil.test/x.webp", path] } }) }],
+      "/users/me/history/episodes": [{ ...episode, show: show(4, { images: { poster: [path] } }) }],
+      "/users/me/ratings/movies": [ratingMovie()],
+    });
+    const result = await fetchTraktLibrary(TOKEN, CLIENT, { fetch: fetcher, now: NOW });
+    expect(result.entries.find(entry => entry.id === "trakt:movie:1")?.poster).toBe(poster);
+    expect(result.entries.find(entry => entry.id === "trakt:show:4")?.poster).toBe(poster);
+    expect(result.entries.find(entry => entry.id === "trakt:episode:9")?.poster).toBe(poster);
+    expect(JSON.stringify(result)).not.toContain("evil.test");
+    expect(JSON.stringify(result)).not.toContain(TOKEN);
+    const lateArtwork = await fetchTraktLibrary(TOKEN, CLIENT, { fetch: libraryFetch({
+      "/users/me/history/episodes": [historyEpisode()],
+      "/users/me/ratings/shows": [{ ...ratingShow(), show: show(4, { images: { poster: [path] } }) }],
+    }), now: NOW });
+    expect(lateArtwork.entries.find(entry => entry.id === "trakt:episode:9")?.poster).toBe(poster);
+  });
   it.each(["injected", "global"])("binds %s fetch to the browser global receiver", async mode => {
     const fetcher = vi.fn<typeof fetch>(async function (this: typeof globalThis) {
       expect(this).toBe(globalThis);

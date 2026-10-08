@@ -160,7 +160,7 @@ test("静态版聊天导入、刷新、完成、编辑、清空和备份恢复�
   expect(backup.sources).toEqual(saved.sources);
   page.once("dialog", confirmation => confirmation.accept());
   await page.getByRole("button", { name: "清空浏览器数据", exact: true }).click();
-  await expect(page.getByRole("status")).toContainText("待办和原文已清空");
+  await expect(page.getByRole("status")).toContainText("原文和海报缓存已清空");
   expect(await savedData(page)).toEqual({ tasks: [], sources: [] });
   expect(await page.evaluate(key => localStorage.getItem(key), STORAGE_KEY)).toBeNull();
   await page.reload();
@@ -211,7 +211,7 @@ test("静态版手机视口可以收集、编辑和清空，页面无横向滚�
   await expectNoHorizontalOverflow(page);
   page.once("dialog", confirmation => confirmation.accept());
   await page.getByRole("button", { name: "清空浏览器数据", exact: true }).click();
-  await expect(page.getByRole("status")).toContainText("待办和原文已清空");
+  await expect(page.getByRole("status")).toContainText("原文和海报缓存已清空");
   expect(await savedData(page)).toEqual({ tasks: [], sources: [] });
   await expectNoHorizontalOverflow(page);
 });

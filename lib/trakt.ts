@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { MAX_MEDIA_IMPORT_BYTES, mediaLibrarySchema, traktMediaId, type MediaEntry, type MediaLibrary } from "./media";
+import { MAX_MEDIA_IMPORT_BYTES, mediaLibrarySchema, normalizeMediaPoster, traktMediaId, type MediaEntry, type MediaLibrary } from "./media";
 
 export const TRAKT_AUTH_CONTEXT_KEY = "life-workbench:trakt-pkce";
 // This is our local sign-in window, not a documented Trakt authorization-code lifetime.
@@ -197,10 +197,12 @@ const idsSchema = z.object({ trakt: safeId, slug: z.string().max(200).regex(/^[a
 const titleMetadata = z.object({
   title: titleSchema, year: z.number().int().min(1880).max(2200).nullish(),
   ids: idsSchema, genres: genresSchema.optional(),
+  images: z.unknown().optional(),
 });
 const episodeMetadata = z.object({
   title: titleSchema.nullish(), ids: idsSchema, genres: genresSchema.optional(),
   season: z.number().int().min(0).max(1_000), number: z.number().int().min(1).max(10_000),
+  images: z.unknown().optional(),
 });
 const movieHistory = z.object({ id: safeId, watched_at: timestamp, type: z.literal("movie"), movie: titleMetadata });
 const episodeHistory = z.object({ id: safeId, watched_at: timestamp, type: z.literal("episode"), episode: episodeMetadata, show: titleMetadata });
@@ -209,6 +211,14 @@ const showRating = z.object({ rated_at: timestamp, rating: z.number().int().min(
 const movieWatchlist = z.object({ id: safeId.optional(), listed_at: timestamp, type: z.literal("movie"), movie: titleMetadata });
 const showWatchlist = z.object({ id: safeId.optional(), listed_at: timestamp, type: z.literal("show"), show: titleMetadata });
 type TitleMetadata = z.infer<typeof titleMetadata>;
+
+function traktPoster(images: unknown): string | undefined {
+  if (!images || typeof images !== "object" || !("poster" in images) || !Array.isArray(images.poster)) return;
+  for (const value of images.poster.slice(0, 10)) {
+    const url = normalizeMediaPoster(value);
+    if (url) return url;
+  }
+}
 
 function headerInteger(headers: Headers, name: string, minimum: number, maximum: number): number {
   const value = headers.get(name);
@@ -257,7 +267,7 @@ async function fetchPages<T>(
   }
 }
 
-/** Import only real viewing events and user ratings; embedded global ratings and CDN image URLs are omitted. */
+/** Import real viewing events, user ratings and safe poster sources for app caching. */
 export async function fetchTraktLibrary(
   accessToken: string, clientId: string, options: TraktRequestOptions = {},
 ): Promise<MediaLibrary> {
@@ -269,10 +279,12 @@ export async function fetchTraktLibrary(
   function title(kind: "movie" | "show", metadata: TitleMetadata): MediaEntry {
     const id = traktMediaId(kind, metadata.ids.trakt);
     const previous = entries.get(id);
+    const poster = traktPoster(metadata.images) ?? previous?.poster;
     const record: MediaEntry = {
       id, kind, title: metadata.title, ...(metadata.year == null ? {} : { year: metadata.year }),
       genres: metadata.genres ?? previous?.genres ?? [], status: previous?.status ?? "unclassified",
       history: previous?.history ?? [], traktId: metadata.ids.trakt,
+      ...(poster ? { poster } : {}),
       ...(metadata.ids.slug ? { traktUrl: `https://trakt.tv/${kind === "movie" ? "movies" : "shows"}/${metadata.ids.slug}` } : {}),
       ...(previous?.rating === undefined ? {} : { rating: previous.rating }),
     };
@@ -295,10 +307,12 @@ export async function fetchTraktLibrary(
     const id = traktMediaId("episode", row.episode.ids.trakt);
     const previous = entries.get(id);
     if (previous && (previous.showId !== show.id || previous.season !== row.episode.season || previous.episode !== row.episode.number)) throw new TraktError(DATA_ERROR);
+    const poster = traktPoster(row.episode.images) ?? show.poster;
     const entry: MediaEntry = {
       id, kind: "episode", title: row.episode.title ?? `${show.title} · S${row.episode.season}E${row.episode.number}`,
       genres: row.episode.genres ?? previous?.genres ?? [], status: "watched", history: previous?.history ?? [],
       traktId: row.episode.ids.trakt, showId: show.id, season: row.episode.season, episode: row.episode.number,
+      ...(poster ? { poster } : {}),
       ...(row.show.ids.slug ? { traktUrl: `https://trakt.tv/shows/${row.show.ids.slug}/seasons/${row.episode.season}/episodes/${row.episode.number}` } : {}),
     };
     entries.set(id, entry);
@@ -322,6 +336,13 @@ export async function fetchTraktLibrary(
   for (const row of wantedShows) {
     const entry = title("show", row.show);
     if (entry.status === "unclassified") entry.status = "wanted";
+  }
+  // Some endpoints supply artwork only in later show metadata.
+  for (const entry of entries.values()) {
+    if (entry.kind === "episode" && !entry.poster && entry.showId) {
+      const poster = entries.get(entry.showId)?.poster;
+      if (poster) entry.poster = poster;
+    }
   }
   if (options.signal?.aborted) throw aborted();
   const result = mediaLibrarySchema.safeParse({ version: 1, source: "trakt", syncedAt: new Date(now).toISOString(), entries: [...entries.values()] });

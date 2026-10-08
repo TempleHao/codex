@@ -29,6 +29,17 @@ export function isSafeTraktLink(value: string): boolean {
   } catch { return false; }
 }
 
+/** Trakt's image API returns scheme-less WebP URLs on this documented CDN. */
+export function normalizeMediaPoster(value: unknown): string | undefined {
+  if (typeof value !== "string" || value.length > 2_000 || /[\u0000-\u0020\u007f]/u.test(value)) return;
+  try {
+    const url = new URL(value.startsWith("walter-r2.trakt.tv/") ? `https://${value}` : value);
+    if (url.protocol !== "https:" || url.hostname !== "walter-r2.trakt.tv" || url.username || url.password || url.port || url.search || url.hash) return;
+    if (!/^\/images\/[a-z0-9/_-]+\.(?:jpg|jpeg|png)\.webp$/i.test(url.pathname) || url.pathname.includes("//")) return;
+    return url.href;
+  } catch { return; }
+}
+
 export const mediaHistorySchema = z.object({
   id: idSchema,
   watchedAt: watchedAtSchema,
@@ -47,6 +58,7 @@ export const mediaEntrySchema = z.object({
   history: z.array(mediaHistorySchema).max(5_000),
   traktId: z.number().int().positive().max(Number.MAX_SAFE_INTEGER).optional(),
   traktUrl: z.string().max(2_000).refine(isSafeTraktLink, "Trakt 链接必须是官方 HTTPS 作品页面。").optional(),
+  poster: z.string().max(2_000).refine(value => normalizeMediaPoster(value) === value, "海报必须使用 Trakt 官方 HTTPS 图片地址。").optional(),
   showId: idSchema.optional(),
   season: z.number().int().min(0).max(1_000).optional(),
   episode: z.number().int().min(1).max(10_000).optional(),
@@ -127,7 +139,7 @@ export function parseMediaImport(input: string | unknown): MediaLibrary {
   const fields: Record<string, string> = {
     version: "格式版本", source: "来源", syncedAt: "同步日期", entries: "影音作品", id: "编号", kind: "作品类型",
     title: "片名", year: "年份", genres: "类型", status: "观看状态", rating: "评分", history: "观看记录", watchedAt: "观看日期",
-    traktId: "Trakt 编号", traktUrl: "Trakt 链接", showId: "所属剧集", season: "季编号", episode: "集编号", thought: "感想",
+    traktId: "Trakt 编号", traktUrl: "Trakt 链接", poster: "海报地址", showId: "所属剧集", season: "季编号", episode: "集编号", thought: "感想",
   };
   const errors = result.error.issues.slice(0, 4).map(issue => {
     const path = issue.path.map(part => typeof part === "number" ? `第 ${part + 1} 项` : fields[String(part)] ?? "字段").join(" / ");

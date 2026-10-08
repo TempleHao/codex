@@ -23,25 +23,33 @@ const test = base.extend<{ audit: void }>({
     const forbiddenRequests: string[] = [];
     const pageErrors: string[] = [];
     const assetFailures: string[] = [];
+    const rejectedPosters = new Set<string>();
     page.on("request", request => {
       const url = new URL(request.url());
       if (!["http:", "https:"].includes(url.protocol)) return;
       const app = [APP_ORIGIN, LOCAL_ORIGIN].includes(url.origin);
       const auth = url.origin === "https://auth.trakt.tv" && ["/oauth/authorize", "/oauth/token"].includes(url.pathname);
+      const poster = url.origin === "https://walter-r2.trakt.tv" && request.resourceType() === "fetch";
       const api = url.origin === "https://api.trakt.tv" && ENDPOINTS.some(path => path === url.pathname);
-      if ((!app && !auth && !api) || (app && /(?:^|\/)api(?:\/|$)/.test(url.pathname))) forbiddenRequests.push(`${request.method()} ${url.origin}${url.pathname}`);
+      if ((!app && !auth && !api && !poster) || (app && /(?:^|\/)api(?:\/|$)/.test(url.pathname))) forbiddenRequests.push(`${request.method()} ${url.origin}${url.pathname}`);
     });
     page.on("pageerror", error => pageErrors.push(error.message));
     page.on("console", message => {
       if (message.type() !== "error") return;
       // The failure case deliberately returns HTTP 500 from a mocked data endpoint.
-      if (message.location().url.startsWith("https://api.trakt.tv/") && /Failed to load resource/.test(message.text())) return;
+      if (["https://api.trakt.tv/", "https://walter-r2.trakt.tv/"].some(origin => message.location().url.startsWith(origin)) && /Failed to load resource/.test(message.text())) return;
       pageErrors.push(message.text());
     });
     page.on("response", response => {
+      if (new URL(response.url()).origin === "https://walter-r2.trakt.tv" && response.status() >= 400) rejectedPosters.add(response.url());
       if ([APP_ORIGIN, LOCAL_ORIGIN].includes(new URL(response.url()).origin) && response.status() >= 400) assetFailures.push(`${response.status()} ${response.url()}`);
     });
-    page.on("requestfailed", request => assetFailures.push(`${request.failure()?.errorText} ${request.url()}`));
+    page.on("requestfailed", request => {
+      // The downloader cancels an HTTP-error body; the poster test deliberately
+      // returns one such response and verifies the fallback plus successful retry.
+      if (rejectedPosters.has(request.url()) && request.failure()?.errorText === "net::ERR_ABORTED") return;
+      assetFailures.push(`${request.failure()?.errorText} ${request.url()}`);
+    });
     await use();
     expect(forbiddenRequests, "影音页面只加载本站资源并使用指定的模拟 Trakt 接口").toEqual([]);
     expect(pageErrors, "保存和授权不应产生未处理的页面错误").toEqual([]);
@@ -368,4 +376,78 @@ test("390px 手机中的五个主导航排成一行，长片名与感想保存�
   await expectNoHorizontalOverflow(page);
   await expectNoTasks(page);
   await page.screenshot({ path: "/tmp/life-media-mobile.png", fullPage: true });
+});
+
+
+test("海报从官方来源缓存为Blob，同一图片不重复下载，刷新复用缓存，失败可重试且备份不含图片内容", async ({ page }) => {
+  const before = originalState();
+  const poster = "https://walter-r2.trakt.tv/images/movies/000/012/601/posters/thumb/e0d9dd35c5.jpg.webp";
+  const retryPoster = "https://walter-r2.trakt.tv/images/movies/000/012/602/posters/thumb/failed.jpg.webp";
+  before.life.media.entries[0].poster = poster;
+  before.life.media.entries[1].poster = poster;
+  before.life.media.entries.push({ id: "manual:retry-poster", kind: "movie", title: "可重试海报的电影", genres: [], status: "wanted", history: [], poster: retryPoster });
+  const image = Buffer.from("UklGRi4AAABXRUJQVlA4ICIAAABQAQCdASoCAAMAAUAmJQBOgC6gAP7wxASMNGvr1093/cAA", "base64");
+  const downloads: Record<string, number> = {};
+  await page.route("https://walter-r2.trakt.tv/**", async route => {
+    const request = route.request();
+    const url = request.url();
+    expect(request.resourceType()).toBe("fetch");
+    expect(request.headers()["cookie"]).toBeUndefined();
+    expect(request.headers()["authorization"]).toBeUndefined();
+    expect(request.headers()["referer"]).toBeUndefined();
+    downloads[url] = (downloads[url] ?? 0) + 1;
+    if (url === retryPoster && downloads[url] === 1) {
+      await route.fulfill({ status: 500, headers: { "Access-Control-Allow-Origin": "http://127.0.0.1:3200" }, contentType: "application/json", body: "{}" });
+      return;
+    }
+    await route.fulfill({ status: 200, headers: { "Access-Control-Allow-Origin": "http://127.0.0.1:3200" }, contentType: "image/webp", body: image });
+  });
+  await openMedia(page, { seed: before });
+  const rawBefore = await rawStorage(page);
+  const loaded = page.locator(".media-title-art img");
+  await expect(loaded).toHaveCount(3); // Two cards plus the selected item's detail.
+  await expect(page.locator("[data-poster-failed]")).toHaveCount(1);
+  expect(downloads[poster]).toBe(1);
+  expect(downloads[retryPoster]).toBe(1);
+  for (const img of await loaded.all()) {
+    expect(await img.getAttribute("src")).toMatch(/^blob:/);
+    await expect.poll(() => img.evaluate(node => (node as HTMLImageElement).naturalWidth)).toBe(2);
+  }
+  expect(await rawStorage(page)).toBe(rawBefore);
+  await page.getByRole("button", { name: "重试失败海报", exact: true }).click();
+  await expect(page.locator("[data-poster-failed]")).toHaveCount(0);
+  await expect(loaded).toHaveCount(4);
+  expect(downloads[poster]).toBe(1);
+  expect(downloads[retryPoster]).toBe(2);
+  await page.reload();
+  await expect(page.getByRole("button", { name: "导出备份", exact: true })).toBeEnabled();
+  await selectView(page, "影音");
+  await expect(loaded).toHaveCount(4);
+  expect(downloads[poster]).toBe(1);
+  expect(downloads[retryPoster]).toBe(2);
+  expect(await rawStorage(page)).toBe(rawBefore);
+  const download = page.waitForEvent("download");
+  await page.getByRole("button", { name: "导出备份", exact: true }).click();
+  const file = await download;
+  const backupText = await readFile((await file.path())!, "utf8");
+  const backup = JSON.parse(backupText);
+  expect(backup.life.media.entries[0].poster).toBe(poster);
+  expect(backupText).not.toContain("blob:");
+  expect(backupText).not.toContain(image.toString("base64"));
+  page.once("dialog", dialog => dialog.accept());
+  await page.getByRole("button", { name: "清空浏览器数据", exact: true }).click();
+  await expect(page.locator(".feedback")).toContainText("海报缓存已清空");
+  const cached = await page.evaluate(async () => new Promise<number>((resolve, reject) => {
+    const request = indexedDB.open("life-workbench-public-posters", 1);
+    request.onsuccess = () => {
+      const db = request.result;
+      const tx = db.transaction("posters");
+      const count = tx.objectStore("posters").count();
+      count.onsuccess = () => resolve(count.result);
+      count.onerror = () => reject(count.error);
+      tx.oncomplete = () => db.close();
+    };
+    request.onerror = () => reject(request.error);
+  }));
+  expect(cached).toBe(0);
 });
