@@ -3,7 +3,7 @@ import { mkdirSync } from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import type { SourceRecord, Task, TaskInput, WorkspaceData } from "./types";
-import { emptyLifeData, lifeDataSchema, mergeLifeBackups, type LifeData } from "./life";
+import { applyLifePatch, emptyLifeData, lifeDataSchema, LifePatchConflict, lifePatchSchema, mergeLifeBackups, type LifeData } from "./life";
 
 export class StoreConflict extends Error {}
 
@@ -73,8 +73,25 @@ export class LifeStore {
 
   saveLife(input: unknown): LifeData {
     const data = lifeDataSchema.parse(input);
+    // Older callers save reading and thoughts without a board field.
+    if (input !== null && typeof input === "object" && !Object.hasOwn(input, "board")) data.board = this.getLife().board;
     this.db.prepare("INSERT INTO life_data (id, data) VALUES (1, ?) ON CONFLICT(id) DO UPDATE SET data = excluded.data").run(JSON.stringify(data));
     return data;
+  }
+
+  patchLife(input: unknown): LifeData {
+    const patch = lifePatchSchema.parse(input);
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      const data = applyLifePatch(this.getLife(), patch);
+      this.saveLife(data);
+      this.db.exec("COMMIT");
+      return data;
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      if (error instanceof LifePatchConflict) throw new StoreConflict(error.message);
+      throw error;
+    }
   }
 
   addBatch(batch: { batchId: string; sourceText: string; tasks: TaskInput[] }): WorkspaceData {

@@ -45,12 +45,17 @@ async function savedData(page: Page): Promise<WorkspaceData> {
 }
 
 async function selectView(page: Page, name: string) {
-  await page.getByRole("navigation", { name: "主导航" }).getByRole("button", { name: new RegExp(`^${name}`) }).click();
+  const taskNames = ["今天", "收件箱", "全部待办", "已完成"];
+  const nav = page.getByRole("navigation", { name: "主导航" });
+  if (taskNames.includes(name)) {
+    await nav.getByRole("button", { name: /^事务/ }).click();
+    await page.getByRole("navigation", { name: "事务视图" }).getByRole("button", { name: new RegExp(`^${name}`) }).click();
+  } else await nav.getByRole("button", { name: new RegExp(`^${name}`) }).click();
 }
 
 async function openWorkspace(page: Page) {
   await page.goto("./");
-  await expect(page.getByRole("button", { name: "收集待办", exact: true })).toBeEnabled();
+  await expect(page.getByRole("button", { name: "导出备份", exact: true })).toBeEnabled();
   await expect(page.locator(".preview-notice")).toContainText("数据仅保存在当前浏览器");
 }
 
@@ -89,7 +94,7 @@ test("GitHub Pages 子路径首页、样式、图标和 manifest 均可访问", 
   expect((await request.get(new URL(iconPath!, page.url()).href)).status()).toBe(200);
   await brand.click();
   await expect(page).toHaveURL("http://127.0.0.1:3200/codex/");
-  await expect(page.getByRole("heading", { name: "今天还没有安排" })).toBeVisible();
+  await expect(page.getByRole("navigation", { name: "主导航" }).getByRole("button", { name: /^人生看板/ })).toHaveAttribute("aria-current", "page");
   await page.screenshot({ path: "/tmp/life-pages-desktop.png", fullPage: true });
 });
 
@@ -120,7 +125,7 @@ test("静态版聊天导入、刷新、完成、编辑、清空和备份恢复�
   expect(saved.tasks[0].sourceId).toBe(saved.sources[0].id);
   expect(saved.sources[0].text).toBe(sourceText);
   await page.reload();
-  await expect(page.getByRole("button", { name: "收集待办", exact: true })).toBeEnabled();
+  await expect(page.getByRole("button", { name: "导出备份", exact: true })).toBeEnabled();
   await selectView(page, "全部待办");
   await page.getByRole("button", { name: `完成：${title}`, exact: true }).click();
   await expect(page.getByRole("button", { name: `完成：${title}`, exact: true })).not.toBeVisible();
@@ -159,12 +164,12 @@ test("静态版聊天导入、刷新、完成、编辑、清空和备份恢复�
   expect(await savedData(page)).toEqual({ tasks: [], sources: [] });
   expect(await page.evaluate(key => localStorage.getItem(key), STORAGE_KEY)).toBeNull();
   await page.reload();
-  await expect(page.getByRole("heading", { name: "今天还没有安排" })).toBeVisible();
-  await page.getByLabel("选择待办备份文件").setInputFiles(filename!);
+  await expect(page.getByRole("navigation", { name: "主导航" }).getByRole("button", { name: /^人生看板/ })).toHaveAttribute("aria-current", "page");
+  await page.getByLabel("选择完整备份文件").setInputFiles(filename!);
   await expect(page.getByRole("status")).toContainText("备份已恢复");
   expect(await savedData(page)).toEqual(saved);
   await page.getByRole("button", { name: "关闭提示", exact: true }).click();
-  await page.getByLabel("选择待办备份文件").setInputFiles(filename!);
+  await page.getByLabel("选择完整备份文件").setInputFiles(filename!);
   await expect(page.getByRole("status")).toContainText("备份已恢复");
   expect(await savedData(page)).toEqual(saved);
 
@@ -173,8 +178,8 @@ test("静态版聊天导入、刷新、完成、编辑、清空和备份恢复�
     const otherPage = await otherContext.newPage();
     audit.watch(otherPage);
     await otherPage.goto(page.url());
-    await expect(otherPage.getByRole("button", { name: "收集待办", exact: true })).toBeEnabled();
-    await expect(otherPage.getByRole("heading", { name: "今天还没有安排" })).toBeVisible();
+    await expect(otherPage.getByRole("button", { name: "导出备份", exact: true })).toBeEnabled();
+    await expect(otherPage.getByRole("navigation", { name: "主导航" }).getByRole("button", { name: /^人生看板/ })).toHaveAttribute("aria-current", "page");
     expect(await savedData(otherPage)).toEqual({ tasks: [], sources: [] });
     expect(await savedData(page)).toEqual(saved);
   } finally { await otherContext.close(); }
@@ -186,6 +191,7 @@ test("静态版手机视口可以收集、编辑和清空，页面无横向滚�
   await expectNoHorizontalOverflow(page);
   await page.screenshot({ path: "/tmp/life-pages-mobile.png", fullPage: true });
   const title = "手机静态测试：整理钥匙、雨伞和快递票据";
+  await selectView(page, "收件箱");
   await page.getByRole("button", { name: "收集待办", exact: true }).click();
   let dialog = page.getByRole("dialog");
   await dialog.getByLabel("聊天整理结果").fill(JSON.stringify({ version: 1, sourceText: "测试原话：把玄关杂物收起来", tasks: [{ title, area: "生活", sourceExcerpt: "把玄关杂物收起来" }] }));
@@ -210,7 +216,7 @@ test("静态版手机视口可以收集、编辑和清空，页面无横向滚�
   await expectNoHorizontalOverflow(page);
 });
 
-test("阅读划线到思考、待办和完整备份形成闭环，手机布局无溢出", async ({ page }) => {
+test("阅读与思考独立保存，可选事务工具和完整备份仍可使用", async ({ page }) => {
   test.setTimeout(60_000);
   await openWorkspace(page);
   await selectView(page, "阅读");
@@ -237,6 +243,7 @@ test("阅读划线到思考、待办和完整备份形成闭环，手机布局�
   await page.getByLabel("思考标题", { exact: true }).fill("周末整理我的生活计划");
   await page.getByLabel("我的想法", { exact: true }).fill("先把健康、家务和阅读安排到一周里，留一些空白。");
   await page.getByRole("button", { name: "保存思考", exact: true }).click();
+  await page.getByRole("article", { name: "周末整理我的生活计划", exact: true }).getByText("事务工具", { exact: true }).click();
   await page.getByRole("button", { name: "转为待办：周末整理我的生活计划", exact: true }).click();
   const taskDialog = page.getByRole("dialog");
   await expect(taskDialog.getByLabel("要做什么", { exact: true })).toHaveValue("周末整理我的生活计划");
@@ -257,12 +264,12 @@ test("阅读划线到思考、待办和完整备份形成闭环，手机布局�
   expect(backup.life).toEqual(life);
   page.once("dialog", confirmation => confirmation.accept());
   await page.getByRole("button", { name: "清空浏览器数据", exact: true }).click();
-  await page.getByLabel("选择待办备份文件").setInputFiles(backupPath!);
+  await page.getByLabel("选择完整备份文件").setInputFiles(backupPath!);
   await expect(page.getByRole("status").first()).toContainText("备份已恢复");
   expect(await savedData(page)).toEqual(saved);
   expect(await page.evaluate(key => JSON.parse(localStorage.getItem(key)!).life, STORAGE_KEY)).toEqual(life);
   await page.setViewportSize({ width: 390, height: 844 });
-  for (const view of ["阅读", "思考", "生活全景"]) {
+  for (const view of ["阅读", "思考", "人生看板"]) {
     await selectView(page, view);
     await expectNoHorizontalOverflow(page);
     await page.screenshot({ path: `/tmp/life-${view === "阅读" ? "reading" : view === "思考" ? "thoughts" : "overview"}-mobile.png`, fullPage: true });
@@ -298,7 +305,7 @@ test("微信读书临时读取只发往官方接口，确认后才存资料，�
   expect(raw).not.toContain(token);
   expect(JSON.parse(raw!).life.reading.books[0].title).toBe("临时读取测试书");
   await page.reload();
-  await expect(page.getByRole("button", { name: "收集待办", exact: true })).toBeEnabled();
+  await expect(page.getByRole("button", { name: "导出备份", exact: true })).toBeEnabled();
   await selectView(page, "阅读");
   await page.getByText("从微信读书带来阅读记录", { exact: true }).click();
   await expect(page.getByLabel("微信读书 API Key", { exact: true })).toHaveValue("");

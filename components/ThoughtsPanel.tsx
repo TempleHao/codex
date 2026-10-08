@@ -265,7 +265,7 @@ export default function ThoughtsPanel({ thoughts, onThoughtsChange, onCreateTask
       <div className="thoughts-heading">
         <p className="section-kicker">留一点空间，给自己的想法</p>
         <h2 id={`${prefix}-heading`}>思考笔记 <span className="thoughts-count">{thoughts.length}</span></h2>
-        <p>读到的、想到的，都可以在这里慢慢写清楚。</p>
+        <p>感受、疑问和判断，都可以慢慢写清楚，再回头看看。</p>
       </div>
       <button ref={newButton} className="button primary" type="button" onClick={() => openEditor()} disabled={Boolean(busy)}><ThoughtIcon name="plus"/>新建思考</button>
     </header>
@@ -309,13 +309,13 @@ export default function ThoughtsPanel({ thoughts, onThoughtsChange, onCreateTask
             <header className="thoughts-card-heading"><h3>{thought.title}</h3><div className="thoughts-card-meta"><time dateTime={thought.updatedAt}>{dateLabel(thought.updatedAt)}</time><span>{book ? `《${book.title}》` : thought.bookId ? "来自阅读" : "随手思考"}</span></div></header>
             <p className="thoughts-body">{thought.body}</p>
             {(excerpt || sourceLink) && <details className="thoughts-source"><summary className="thoughts-source-label">{excerpt ? "回看原摘录" : "回看阅读来源"}{book ? ` · ${book.title}` : ""}</summary>{excerpt && <blockquote>{excerpt}</blockquote>}{sourceLink && <a href={sourceLink} target="_blank" rel="noopener noreferrer">{linkedHighlight?.deepLink === sourceLink ? "打开原划线" : "打开原书"}<ThoughtIcon name="arrow"/></a>}</details>}
-            <footer className="thoughts-card-actions"><button type="button" aria-label={`转为待办：${thought.title}`} onClick={() => void createTask(thought)} disabled={Boolean(busy)}>{converting ? "正在转入…" : "转为待办"}<ThoughtIcon name="arrow"/></button><div><button type="button" aria-label={`编辑思考：${thought.title}`} onClick={() => openEditor(thought)} disabled={Boolean(busy)}>编辑</button><button className="thoughts-danger" type="button" aria-label={`删除思考：${thought.title}`} onClick={() => void deleteThought(thought)} disabled={Boolean(busy)}>{deleting ? "正在删除…" : "删除"}</button></div></footer>
+            <footer className="thoughts-card-actions"><div><button type="button" aria-label={`编辑思考：${thought.title}`} onClick={() => openEditor(thought)} disabled={Boolean(busy)}>编辑</button><button className="thoughts-danger" type="button" aria-label={`删除思考：${thought.title}`} onClick={() => void deleteThought(thought)} disabled={Boolean(busy)}>{deleting ? "正在删除…" : "删除"}</button></div><details className="reading-transaction-tools thoughts-transaction-tools"><summary>事务工具</summary><p>需要处理一件具体的事时，可以打开待办草稿。</p><button type="button" className="button secondary" aria-label={`转为待办：${thought.title}`} onClick={() => void createTask(thought)} disabled={Boolean(busy)}>{converting ? "正在转入…" : "转为待办"}<ThoughtIcon name="arrow"/></button></details></footer>
           </article>;
         })}
         {visibleThoughts.length === 0 && <div className="thoughts-empty">
           <span className="thoughts-empty-art"><ThoughtIcon name="note"/></span>
           <h3>{search.trim() ? "没有找到这条思考" : "给思考留一个位置"}</h3>
-          <p>{search.trim() ? "换一个关键词，再找找看。" : "记下一段阅读后的感受，或一个还没想透的问题。"}</p>
+          <p>{search.trim() ? "换一个关键词，再找找看。" : "记下当下的感受、还没想透的问题，或一次观点的变化。"}</p>
           {search.trim() ? <button className="button secondary" type="button" onClick={() => setSearch("")}>清除搜索</button> : !editor && <button className="button secondary" type="button" onClick={() => openEditor()} disabled={Boolean(busy)}>写下第一条思考<ThoughtIcon name="plus"/></button>}
           {!search.trim() && <span className="thoughts-empty-note">不必急着得出答案，先留下此刻的想法。</span>}
         </div>}

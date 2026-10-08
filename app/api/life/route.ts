@@ -15,3 +15,10 @@ export async function PUT(request: Request) {
     return NextResponse.json(getStore().saveLife(await readJson(request, 5_000_000)), { headers: { "Cache-Control": "no-store" } });
   } catch (error) { return apiError(error); }
 }
+
+export async function PATCH(request: Request) {
+  try {
+    // The request includes both the original module snapshot and its replacement.
+    return NextResponse.json(getStore().patchLife(await readJson(request, 10_000_000)), { headers: { "Cache-Control": "no-store" } });
+  } catch (error) { return apiError(error); }
+}

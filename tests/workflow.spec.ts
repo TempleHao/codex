@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { expect, test, type APIRequestContext, type Page } from "@playwright/test";
 import type { WorkspaceData } from "../lib/types";
+import type { LifeData } from "../lib/life";
 
 async function snapshot(request: APIRequestContext): Promise<WorkspaceData> {
   const response = await request.get("/api/tasks");
@@ -10,7 +11,12 @@ async function snapshot(request: APIRequestContext): Promise<WorkspaceData> {
 }
 
 async function selectView(page: Page, name: string) {
-  await page.getByRole("navigation", { name: "主导航" }).getByRole("button", { name: new RegExp(`^${name}`) }).click();
+  const taskNames = ["今天", "收件箱", "全部待办", "已完成"];
+  const nav = page.getByRole("navigation", { name: "主导航" });
+  if (taskNames.includes(name)) {
+    await nav.getByRole("button", { name: /^事务/ }).click();
+    await page.getByRole("navigation", { name: "事务视图" }).getByRole("button", { name: new RegExp(`^${name}`) }).click();
+  } else await nav.getByRole("button", { name: new RegExp(`^${name}`) }).click();
 }
 
 async function expectNoHorizontalOverflow(page: Page) {
@@ -22,6 +28,34 @@ async function expectNoHorizontalOverflow(page: Page) {
   expect(dimensions.documentWidth).toBeLessThanOrEqual(dimensions.width);
   expect(dimensions.bodyWidth).toBeLessThanOrEqual(dimensions.width);
 }
+
+test("生活模块的 PATCH 保留其他模块，冲突与跨站修改不写入", async ({ request }) => {
+  const initialResponse = await request.get("/api/life");
+  expect(initialResponse.status()).toBe(200);
+  const initial: LifeData = await initialResponse.json();
+  const timestamp = new Date().toISOString();
+  const board = { ...initial.board, observations: [...initial.board.observations, {
+    id: randomUUID(), area: "生活", kind: "experience", text: "留下经历本身的价值。", date: "2026-10-08", createdAt: timestamp,
+  }] };
+  const first = await request.patch("/api/life", { data: { section: "board", expected: initial.board, value: board } });
+  expect(first.status()).toBe(200);
+  const thoughts = [...initial.thoughts, { id: randomUUID(), title: "独立的思考", body: "允许疑问留下。", createdAt: timestamp, updatedAt: timestamp }];
+  const second = await request.patch("/api/life", { data: { section: "thoughts", expected: initial.thoughts, value: thoughts } });
+  expect(second.status()).toBe(200);
+  const saved: LifeData = await second.json();
+  expect(saved.board).toEqual(board);
+  expect(saved.thoughts).toEqual(thoughts);
+  expect(saved.reading).toEqual(initial.reading);
+
+  const stale = await request.patch("/api/life", { data: { section: "board", expected: initial.board, value: initial.board } });
+  expect(stale.status()).toBe(409);
+  const crossOrigin = await request.patch("/api/life", { headers: { Origin: "https://example.invalid" }, data: { section: "board", expected: board, value: initial.board } });
+  expect(crossOrigin.status()).toBe(403);
+  const invalid = await request.patch("/api/life", { data: { section: "thoughts", expected: thoughts, value: thoughts, unexpected: true } });
+  expect(invalid.status()).toBe(400);
+  const finalResponse = await request.get("/api/life");
+  expect(await finalResponse.json()).toEqual(saved);
+});
 
 test("聊天整理结果经过预览确认后保存，刷新、完成、编辑与备份恢复均保留数据", async ({ page, request }) => {
   test.setTimeout(90_000);
@@ -35,8 +69,9 @@ test("聊天整理结果经过预览确认后保存，刷新、完成、编辑�
     await test.step("新环境为空，粘贴与预览尚不写入数据库", async () => {
       expect(await snapshot(request)).toEqual({ tasks: [], sources: [] });
       await page.goto("/");
+      await selectView(page, "全部待办");
       await expect(page.getByRole("button", { name: "收集待办", exact: true })).toBeEnabled();
-      await expect(page.getByRole("heading", { name: "今天还没有安排" })).toBeVisible();
+      await expect(page.getByRole("heading", { name: "你的待办，从这里开始" })).toBeVisible();
       await page.screenshot({ path: "/tmp/life-desktop.png", fullPage: true });
       await selectView(page, "收件箱");
       await page.getByRole("button", { name: "收集待办", exact: true }).click();
@@ -70,6 +105,7 @@ test("聊天整理结果经过预览确认后保存，刷新、完成、编辑�
 
     await test.step("刷新后保留，完成和撤销完成可往返", async () => {
       await page.reload();
+      await selectView(page, "全部待办");
       await expect(page.getByRole("button", { name: "收集待办", exact: true })).toBeEnabled();
       await selectView(page, "全部待办");
       await expect(page.getByRole("button", { name: `完成：${confirmedTitle}`, exact: true })).toBeVisible();
@@ -117,7 +153,7 @@ test("聊天整理结果经过预览确认后保存，刷新、完成、编辑�
       expect(await snapshot(request)).toEqual({ tasks: [], sources: [] });
       await page.reload();
       await expect(page.getByRole("button", { name: "恢复备份", exact: true })).toBeEnabled();
-      await page.getByLabel("选择待办备份文件").setInputFiles(file!);
+      await page.getByLabel("选择完整备份文件").setInputFiles(file!);
       await expect(page.getByRole("status")).toContainText("备份已恢复");
       const restored = await snapshot(request);
       expect(restored.tasks).toEqual(backup.tasks);
@@ -161,6 +197,7 @@ test("390 像素手机视口可收集、预览、新建和编辑，没有横向�
   let taskId: string | undefined;
   try {
     await page.goto("/");
+    await selectView(page, "全部待办");
     await expect(page.getByRole("button", { name: "收集待办", exact: true })).toBeEnabled();
     await expectNoHorizontalOverflow(page);
     await page.screenshot({ path: "/tmp/life-mobile.png", fullPage: true });

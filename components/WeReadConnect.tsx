@@ -106,7 +106,7 @@ export default function WeReadConnect({ onImport }: WeReadConnectProps) {
     <summary><span className="weread-connect-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M12 5C8 3 4 3 2 4v15c3-1 7-1 10 1 3-2 7-2 10-1V4c-2-1-6-1-10 1ZM12 5v15"/></svg></span><span><strong>从微信读书带来阅读记录</strong><small>临时连接 · 先预览，再保存</small></span><span className="weread-connect-chevron" aria-hidden="true">⌄</span></summary>
     <div className="weread-connect-body">
       <p className="weread-connect-intro">取回书架、阅读统计与划线想法，让读过的书在这里留下痕迹。</p>
-      <p className="weread-connect-note">刷新后需重新连接；此功能正在验证浏览器兼容性。</p>
+      <p className="weread-connect-note">目前官方跨域规则限制 GitHub 网页直连，建议先使用本页的 JSON 导入。官方规则变化后，可以再尝试临时连接；刷新后需重新授权。</p>
       {saved ? <p className="weread-connect-success" role="status">阅读记录已保存。</p> : draft ? <section className="weread-connect-preview" aria-labelledby="weread-preview-title">
         <h3 id="weread-preview-title">已取回，等你确认</h3>
         <div className="weread-connect-counts"><span><strong>{draft.books.length}</strong> 阅读条目</span><span><strong>{draft.highlights.length}</strong> 划线与想法</span></div>
@@ -122,7 +122,7 @@ export default function WeReadConnect({ onImport }: WeReadConnectProps) {
       </form>}
       {progress && <p className="weread-connect-progress" role="status" aria-live="polite">{progress}</p>}
       {error && <p className="weread-connect-error" role="alert">{error}</p>}
-      <details className="weread-connect-help"><summary>连接不成功时</summary><p>网络或浏览器跨域限制（CORS）可能影响临时连接。浏览器直连兼容性尚未验证，无法连接时，请使用本页的 JSON 导入入口。</p><p>一次最多获取 80 本有笔记的书、10000 条划线与想法；超过时会停止，你可以先取消勾选笔记，仅获取书架与统计。</p></details>
+      <details className="weread-connect-help"><summary>连接不成功时</summary><p>当前官方接口的跨域预检未允许 GitHub Pages 来源，网页可能无法读取。请使用本页的 JSON 导入入口保存已有阅读资料。</p><p>一次最多获取 80 本有笔记的书、10000 条划线与想法；超过时会停止，你可以先取消勾选笔记，仅获取书架与统计。</p></details>
     </div>
   </details>;
 }

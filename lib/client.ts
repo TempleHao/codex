@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { backupSchema, legacyBackupSchema, MAX_BACKUP_BYTES } from "./backup";
-import { emptyLifeData, lifeDataSchema, mergeLifeBackups, type LifeData } from "./life";
+import { applyLifePatch, emptyLifeData, lifeDataSchema, lifePatchSchema, mergeLifeBackups, type LifeData } from "./life";
 import type { SourceRecord, Task, WorkspaceData } from "./types";
 import { importBatchSchema, taskPatchSchema, validationErrorMessage } from "./validation";
 
@@ -104,9 +104,19 @@ export class BrowserStore {
   saveLife(input: unknown): LifeData {
     const life = validate(lifeDataSchema, input);
     const state = this.read();
+    // Older callers save reading and thoughts without a board field.
+    if (input !== null && typeof input === "object" && !Object.hasOwn(input, "board")) life.board = state.life.board;
     state.life = life;
     this.write(state);
     return life;
+  }
+
+  patchLife(input: unknown): LifeData {
+    const patch = validate(lifePatchSchema, input);
+    const state = this.read();
+    state.life = applyLifePatch(state.life, patch);
+    this.write(state);
+    return state.life;
   }
 
   addBatch(input: unknown): WorkspaceData {
@@ -214,6 +224,7 @@ export class BrowserStore {
     if (pathname === "/api/tasks" && method === "GET") result = this.snapshot();
     else if (pathname === "/api/life" && method === "GET") result = this.getLife();
     else if (pathname === "/api/life" && method === "PUT") result = this.saveLife(readBody(5_000_000));
+    else if (pathname === "/api/life" && method === "PATCH") result = this.patchLife(readBody(10_000_000));
     else if (pathname === "/api/tasks" && method === "POST") result = this.addBatch(readBody());
     else if (pathname === "/api/export" && method === "GET") result = this.exportBackup();
     else if (pathname === "/api/restore" && method === "POST") result = this.restore(readBody(MAX_BACKUP_BYTES));
@@ -242,7 +253,14 @@ function currentBrowserStore(): BrowserStore {
 }
 
 export async function request<T>(url: string, options?: RequestInit): Promise<T> {
-  if (IS_STATIC_PREVIEW) return currentBrowserStore().handleRequest<T>(url, options);
+  if (IS_STATIC_PREVIEW) {
+    const method = (options?.method || "GET").toUpperCase();
+    if (["POST", "PUT", "PATCH", "DELETE"].includes(method) && typeof navigator !== "undefined" && navigator.locks) {
+      // Every tab uses one exclusive lock for the shared localStorage document.
+      return navigator.locks.request(BROWSER_STORAGE_KEY, () => currentBrowserStore().handleRequest<T>(url, options));
+    }
+    return currentBrowserStore().handleRequest<T>(url, options);
+  }
   const target = APP_BASE_PATH && /^\/(?!\/)/.test(url) && !url.startsWith(`${APP_BASE_PATH}/`) ? `${APP_BASE_PATH}${url}` : url;
   const response = await fetch(target, options);
   const body = await response.json().catch(() => null);

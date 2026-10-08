@@ -8,6 +8,7 @@ import { LifeStore, StoreConflict } from "./store";
 import { chinaToday } from "./dates";
 import type { TaskInput } from "./types";
 import { emptyLifeData, type LifeData } from "./life";
+import { backupSchema } from "./backup";
 
 const opened: LifeStore[] = [];
 const directories: string[] = [];
@@ -23,6 +24,14 @@ function life(bookId = "book-1"): LifeData {
   data.reading.books.push({ id: bookId, title: "阅读中的书", author: "作者", kind: "ebook", status: "reading" });
   data.reading.highlights.push({ id: `${bookId}-highlight`, bookId, text: "值得记下的原文" });
   data.thoughts.push({ id: randomUUID(), title: "读后的想法", body: "可以用在生活里的观察", createdAt: "2026-10-07T12:00:00.000Z", updatedAt: "2026-10-07T12:00:00.000Z", bookId, highlightId: `${bookId}-highlight`, sourceExcerpt: "值得记下的原文" });
+  return data;
+}
+function boardLife(bookId = "board-book"): LifeData {
+  const data = life(bookId);
+  const threadId = randomUUID();
+  data.board.threads.push({ id: threadId, title: "慢慢理解什么值得投入", area: "思考", kind: "question", state: "active", description: " 没有期限，也不必变成任务。 ", createdAt: "2026-10-07T12:00:00.000Z", updatedAt: "2026-10-07T13:00:00.000Z" });
+  data.board.observations.push({ id: randomUUID(), threadId, area: "生活", kind: "experience", text: " 散步时愿意停下来。\n保留当时的原话。 ", date: "2026-10-07", createdAt: "2026-10-07T14:00:00.000Z" });
+  data.board.reviews.push({ id: randomUUID(), date: "2026-10-07", title: "这段时间的人生回顾", noticed: "有些兴趣值得慢慢探索", changed: "不再急着给每件事安排结果", keep: "留一点空白", createdAt: "2026-10-07T15:00:00.000Z" });
   return data;
 }
 const item: TaskInput = { title: "预约洗牙", area: "健康", notes: "先询问费用", plannedDate: "2026-10-08", dueDate: null, priority: "normal", needsClarification: ["确认医院"], sourceExcerpt: "最近想洗牙" };
@@ -89,6 +98,25 @@ describe("persistent task workflow", () => {
 });
 
 describe("persistent reading and thoughts", () => {
+  it("reads a legacy reading and thoughts row without rewriting it or its tasks", () => {
+    const filename = databaseFile();
+    const original = store(filename);
+    const tasks = original.addBatch({ batchId: randomUUID(), sourceText: "模型迁移前的原文", tasks: [item] });
+    const saved = original.saveLife(life());
+    close(original);
+    const raw = JSON.stringify({ reading: saved.reading, thoughts: saved.thoughts });
+    const legacy = new DatabaseSync(filename);
+    try { legacy.prepare("UPDATE life_data SET data = ? WHERE id = 1").run(raw); }
+    finally { legacy.close(); }
+
+    const upgraded = store(filename);
+    expect(upgraded.getLife()).toEqual(saved);
+    expect(upgraded.snapshot()).toEqual(tasks);
+    const inspected = new DatabaseSync(filename);
+    try { expect(inspected.prepare("SELECT data FROM life_data WHERE id = 1").get()?.data).toBe(raw); }
+    finally { inspected.close(); }
+  });
+
   it("adds the singleton table to a legacy task database without changing its data", () => {
     const filename = databaseFile();
     const original = store(filename);
@@ -169,5 +197,136 @@ describe("persistent reading and thoughts", () => {
     expect(() => db.restore({ sources: [newSource, ...tasks.sources], tasks: [{ ...tasks.tasks[0], title: "冲突标题" }], life: life("backup-book") })).toThrow(StoreConflict);
     expect(db.snapshot()).toEqual(tasks);
     expect(db.getLife()).toEqual(existing);
+  });
+});
+
+describe("persistent life board and compatibility", () => {
+  it("restores an old v2 reading and thoughts backup while preserving the current life board", () => {
+    const db = store();
+    const originalTasks = db.addBatch({ batchId: randomUUID(), sourceText: "已有任务原文", tasks: [item] });
+    const existing = db.saveLife(boardLife("existing-book"));
+    const source = store();
+    const incomingTasks = source.addBatch({ batchId: randomUUID(), sourceText: "旧版阅读备份原文", tasks: [item] });
+    const incoming = life("backup-book");
+    const oldLife = { reading: incoming.reading, thoughts: incoming.thoughts };
+    const backup = backupSchema.parse({ format: "life-workbench-backup", version: 2, exportedAt: "2026-10-07T12:00:00.000Z", ...incomingTasks, life: oldLife });
+    const restored = db.restore(backup);
+    expect(restored.tasks).toEqual(expect.arrayContaining([...originalTasks.tasks, ...incomingTasks.tasks]));
+    expect(db.getLife().board).toEqual(existing.board);
+    expect(db.getLife().reading.books).toEqual([...existing.reading.books, ...incoming.reading.books]);
+    expect(db.getLife().thoughts).toEqual([...existing.thoughts, ...incoming.thoughts]);
+    expect(db.restore(backup)).toEqual(restored);
+    expect(db.getLife().board).toEqual(existing.board);
+    expect(oldLife).not.toHaveProperty("board");
+  });
+
+  it("persists and restores all life board fields, original wording and IDs across reopening and retries", () => {
+    const filename = databaseFile();
+    const db = store(filename);
+    const tasks = db.addBatch({ batchId: randomUUID(), sourceText: "迁移前的原文", tasks: [item] });
+    const saved = db.saveLife(boardLife());
+    close(db);
+    const reopened = store(filename);
+    expect(reopened.getLife()).toEqual(saved);
+    expect(reopened.snapshot()).toEqual(tasks);
+    const backup = { ...reopened.snapshot(), life: reopened.getLife() };
+    const restored = store();
+    expect(restored.restore(backup)).toEqual(tasks);
+    expect(restored.getLife()).toEqual(saved);
+    expect(restored.restore(backup)).toEqual(tasks);
+    expect(restored.getLife()).toEqual(saved);
+  });
+
+  it.each(["threads", "observations", "reviews"] as const)("rolls back new tasks, sources, reading and every board record on conflicting %s", collection => {
+    const db = store();
+    const tasks = db.addBatch({ batchId: randomUUID(), sourceText: "已有任务原文", tasks: [item] });
+    const existing = db.saveLife(boardLife("existing-book"));
+    const source = store();
+    const incomingTasks = source.addBatch({ batchId: randomUUID(), sourceText: "不能部分恢复的新原文", tasks: [item] });
+    const incoming = life("backup-book");
+    incoming.board = structuredClone(existing.board);
+    incoming.board.observations.push({ ...incoming.board.observations[0], id: randomUUID(), text: "不能部分恢复的经历" });
+    if (collection === "threads") incoming.board.threads[0].title = "冲突的人生线头";
+    if (collection === "observations") incoming.board.observations[0].text = "冲突的经历";
+    if (collection === "reviews") incoming.board.reviews[0].noticed = "冲突的回顾";
+    expect(() => db.restore({ ...incomingTasks, life: incoming })).toThrow(StoreConflict);
+    expect(db.snapshot()).toEqual(tasks);
+    expect(db.getLife()).toEqual(existing);
+  });
+
+  it("preserves the current board on legacy reading and thoughts saves and accepts an explicit empty board", () => {
+    const db = store();
+    const tasks = db.addBatch({ batchId: randomUUID(), sourceText: "兼容保留的原文", tasks: [item] });
+    const existing = db.saveLife(boardLife("existing-book"));
+    const incoming = life("edited-book");
+    const updated = db.saveLife({ reading: incoming.reading, thoughts: incoming.thoughts });
+    expect(updated).toEqual({ ...incoming, board: existing.board });
+    expect(db.getLife()).toEqual(updated);
+    expect(db.snapshot()).toEqual(tasks);
+
+    const fullUpdate = { ...updated, thoughts: [{ ...updated.thoughts[0], body: "完整对象更新的思考" }] };
+    expect(db.saveLife(fullUpdate)).toEqual(fullUpdate);
+    expect(db.getLife().board).toEqual(existing.board);
+    expect(() => db.saveLife({ ...fullUpdate, board: { threads: [] } })).toThrow();
+    expect(db.getLife()).toEqual(fullUpdate);
+    const cleared = { ...fullUpdate, board: emptyLifeData().board };
+    expect(db.saveLife(cleared)).toEqual(cleared);
+    expect(db.getLife()).toEqual(cleared);
+    expect(db.snapshot()).toEqual(tasks);
+  });
+});
+
+describe("atomic life module saves", () => {
+  it.each(["board", "reading", "thoughts"] as const)("rejects a stale %s snapshot across database connections without changing any record", section => {
+    const filename = databaseFile();
+    const first = store(filename);
+    const second = store(filename);
+    const original = first.saveLife(boardLife());
+    const tasks = first.addBatch({ batchId: randomUUID(), sourceText: "独立事务原文", tasks: [item] });
+    const replacement = boardLife("new-book");
+    const saved = second.patchLife({ section, expected: original[section], value: replacement[section] });
+    const inspected = new DatabaseSync(filename);
+    try {
+      const raw = inspected.prepare("SELECT data FROM life_data WHERE id = 1").get()?.data;
+      expect(() => first.patchLife({ section, expected: original[section], value: original[section] })).toThrow(StoreConflict);
+      expect(inspected.prepare("SELECT data FROM life_data WHERE id = 1").get()?.data).toBe(raw);
+    } finally { inspected.close(); }
+    expect(first.getLife()).toEqual(saved);
+    expect(first.snapshot()).toEqual(tasks);
+    // A rejected write releases its transaction, allowing a later valid save.
+    expect(first.patchLife({ section, expected: saved[section], value: original[section] })).toEqual(original);
+  });
+
+  it("merges different modules saved from one old snapshot across database connections", () => {
+    const filename = databaseFile();
+    const first = store(filename);
+    const second = store(filename);
+    const original = first.getLife();
+    const replacement = boardLife();
+    const tasks = second.addBatch({ batchId: randomUUID(), sourceText: "独立保留的事务", tasks: [item] });
+    first.patchLife({ section: "board", expected: original.board, value: replacement.board });
+    second.patchLife({ section: "reading", expected: original.reading, value: replacement.reading });
+    expect(first.patchLife({ section: "thoughts", expected: original.thoughts, value: replacement.thoughts })).toEqual(replacement);
+    expect(second.getLife()).toEqual(replacement);
+    expect(second.snapshot()).toEqual(tasks);
+    close(first);
+    expect(store(filename).getLife()).toEqual(replacement);
+  });
+
+  it("rejects invalid module patches before writing and keeps the connection usable", () => {
+    const db = store();
+    const existing = db.saveLife(boardLife());
+    const valid = { section: "board", expected: existing.board, value: existing.board };
+    for (const input of [
+      { ...valid, section: "unknown" },
+      { ...valid, token: "rejected-value" },
+      { section: "board", value: existing.board },
+      { ...valid, value: { ...existing.board, observations: [{ ...existing.board.observations[0], date: "2026-02-30" }] } },
+      { section: "thoughts", expected: existing.thoughts, value: [existing.thoughts[0], existing.thoughts[0]] },
+    ]) {
+      expect(() => db.patchLife(input)).toThrow();
+      expect(db.getLife()).toEqual(existing);
+    }
+    expect(db.patchLife({ ...valid, value: emptyLifeData().board })).toEqual({ ...existing, board: emptyLifeData().board });
   });
 });

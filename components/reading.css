@@ -113,6 +113,16 @@
 .reading-book-facts dd{margin:0;color:#849577;text-align:right}
 .reading-book-actions{display:flex;gap:8px;margin:20px 0 24px}
 .reading-book-actions>.button{font-size:10px;padding:8px 11px;min-height:35px;flex:1;gap:6px}
+.reading-transaction-tools{font-size:10px;line-height:1.9;color:#94a086;min-width:0}
+.reading-transaction-tools>summary{cursor:pointer;color:#849678;min-height:30px;display:list-item;list-style-position:inside}
+.reading-transaction-tools>summary:focus-visible{outline:2px solid #829974;outline-offset:3px;border-radius:3px}
+.reading-transaction-tools>p{font-size:10px;line-height:1.9;color:#98a28b;margin:5px 0 10px;overflow-wrap:anywhere}
+.reading-transaction-tools>.button{font-size:10px;padding:8px 11px;min-height:35px;gap:6px}
+.reading-book-transaction-tools{margin:18px 0 23px;padding-top:11px;border-top:1px dashed #dce2d1}
+.reading-highlight-actions>.reading-highlight-transaction-tools{align-self:stretch;width:100%;margin-top:2px}
+.thoughts-card-actions>.thoughts-transaction-tools{margin-left:auto;max-width:260px;text-align:right}
+.thoughts-card-actions>.thoughts-transaction-tools>p{text-align:left}
+.thoughts-card-actions>.thoughts-transaction-tools>.button{font-size:10px;padding:8px 11px;min-height:35px;color:#7f916f}
 .reading-detail-tabs{display:flex;border-bottom:1px solid #dce1d2;gap:20px;padding-bottom:0}
 .reading-detail-tabs>button{display:flex;gap:5px;align-items:center;position:relative;color:#a0ab93;font-size:11px;padding:0 0 12px}
 .reading-detail-tabs>button.active{color:#57794b}
@@ -198,10 +208,10 @@
 .thoughts-source blockquote{padding-left:12px;margin:13px 0 0;border-left:2px solid #bdc9ab;color:#95a087;font-size:11px;line-height:1.9;white-space:pre-wrap;overflow-wrap:anywhere}
 .thoughts-source>a{display:inline-flex;align-items:center;gap:8px;font-size:10px;color:#789967;margin-top:12px}
 .thoughts-source>a>svg{width:13px;height:13px}
-.thoughts-card-actions{display:flex;justify-content:space-between;align-items:center;gap:15px;margin-top:22px;padding-top:15px;border-top:1px solid #eef0e6}
+.thoughts-card-actions{display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:15px;margin-top:22px;padding-top:15px;border-top:1px solid #eef0e6}
 .thoughts-card-actions button{font-size:10px;display:inline-flex;align-items:center;gap:7px;color:#7f9b6b;padding:3px 0}
 .thoughts-card-actions button:hover{color:#355a3b}
-.thoughts-card-actions>div{display:flex;gap:17px}
+.thoughts-card-actions>div{display:flex;align-items:center;gap:17px;min-height:30px}
 .thoughts-card-actions button.thoughts-danger{color:#b49c89}
 .thoughts-card-actions button.thoughts-danger:hover{color:#a45e4c}
 .thoughts-empty{min-height:335px;background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:40px 23px;display:flex;flex-direction:column;align-items:center;text-align:center}
