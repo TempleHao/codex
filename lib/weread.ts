@@ -6,18 +6,66 @@ export const WEREAD_GATEWAY = "https://i.weread.qq.com/api/agent/gateway";
 export const WEREAD_SKILL_VERSION = "1.0.4";
 
 type ErrorCode = "InvalidInput" | "NetworkError" | "Timeout" | "HttpError" | "BusinessError" | "InvalidResponse" | "UpgradeRequired";
+export type WeReadOperation = "/shelf/sync" | "/readdata/detail" | "/user/notebooks" | "/book/bookmarklist" | "/review/list/mine" | "/store/search" | "/book/getprogress";
+export interface WeReadDiagnostics {
+  operation: WeReadOperation;
+  gatewayCode?: number;
+  responsePaginationType?: "boolean" | "number" | "missing" | "other";
+}
+const OPERATIONS: readonly WeReadOperation[] = ["/shelf/sync", "/readdata/detail", "/user/notebooks", "/book/bookmarklist", "/review/list/mine", "/store/search", "/book/getprogress"];
+
 export class WeReadError extends Error {
-  constructor(public readonly code: ErrorCode, message: string) { super(message); this.name = "WeReadError"; }
+  readonly diagnostics?: Readonly<WeReadDiagnostics>;
+  constructor(public readonly code: ErrorCode, message: string, diagnostics?: WeReadDiagnostics) {
+    super(message);
+    this.name = "WeReadError";
+    // Copy a closed set of values rather than retaining an arbitrary supplied
+    // object. Diagnostics may be published by the server-side sync job.
+    try {
+      if (diagnostics) {
+        // Read each field exactly once: supplied accessors must not replace a
+        // checked value with private content when the object is copied.
+        const suppliedOperation = diagnostics.operation;
+        const code = gatewayCode(diagnostics.gatewayCode);
+        const suppliedPaginationType = diagnostics.responsePaginationType;
+        const operation = OPERATIONS.find(value => value === suppliedOperation);
+        const responsePaginationType = (["boolean", "number", "missing", "other"] as const)
+          .find(value => value === suppliedPaginationType);
+        if (operation) this.diagnostics = Object.freeze({ operation,
+          ...(code === undefined ? {} : { gatewayCode: code }),
+          ...(responsePaginationType === undefined ? {} : { responsePaginationType }) });
+      }
+    } catch { /* Unreadable metadata is omitted; the fixed error remains usable. */ }
+  }
 }
 export class UpgradeRequired extends WeReadError {
-  constructor() {
-    super("UpgradeRequired", "微信读书接口要求升级技能。请更新官方微信读书技能后重新连接，当前操作已暂停。");
+  constructor(diagnostics?: WeReadDiagnostics) {
+    super("UpgradeRequired", "微信读书接口要求升级技能。请更新官方微信读书技能后重新连接，当前操作已暂停。", diagnostics);
     this.name = "UpgradeRequired";
   }
 }
 
 function record(value: unknown): Record<string, unknown> | null {
   return value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
+}
+function gatewayCode(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isInteger(value) && value >= -2_147_483_648 && value <= 2_147_483_647 ? value : undefined;
+}
+function responseDiagnostics(operation: WeReadOperation, response: unknown): WeReadDiagnostics {
+  const outer = record(response);
+  const inner = record(outer?.data);
+  const payload = inner ?? outer;
+  const outerCode = gatewayCode(outer?.errcode);
+  const innerCode = gatewayCode(inner?.errcode);
+  const code = outerCode !== undefined && outerCode !== 0 ? outerCode : innerCode ?? outerCode;
+  return { operation, ...(code === undefined ? {} : { gatewayCode: code }),
+    ...(payload ? { responsePaginationType: !Object.hasOwn(payload, "hasMore") ? "missing" as const
+      : typeof payload.hasMore === "boolean" ? "boolean" as const
+      : typeof payload.hasMore === "number" ? "number" as const : "other" as const } : {}) };
+}
+function diagnosticError(error: WeReadError, operation: WeReadOperation, response: unknown): WeReadError {
+  const diagnostics = responseDiagnostics(operation, response);
+  return error instanceof UpgradeRequired ? new UpgradeRequired(diagnostics) : new WeReadError(error.code, error.message, diagnostics);
 }
 function invalidResponse(): never { throw new WeReadError("InvalidResponse", "微信读书返回的数据格式暂不支持，请保留已有阅读记录。"); }
 function inspectGateway(value: Record<string, unknown>): void {
@@ -55,6 +103,7 @@ export class WeReadClient {
   #timeoutMs: number;
   #upgradeRequired = false;
   #active = new Set<AbortController>();
+  #lastDiagnostics: WeReadDiagnostics | undefined;
 
   constructor({ token, fetch: fetchImpl = globalThis.fetch, timeoutMs = 15_000 }: WeReadClientOptions) {
     if (!token.trim() || /[\r\n]/.test(token) || !Number.isFinite(timeoutMs) || timeoutMs <= 0) {
@@ -72,12 +121,20 @@ export class WeReadClient {
     this.#active.forEach(controller => controller.abort());
   }
 
-  async #request(apiName: string, parameters: Record<string, string | number> = {}): Promise<Record<string, unknown>> {
+  /** Fixed metadata only: no response, identifiers, parameters or credentials. */
+  getLastDiagnostics(): WeReadDiagnostics | undefined {
+    return this.#lastDiagnostics ? { ...this.#lastDiagnostics } : undefined;
+  }
+
+  async #request(apiName: WeReadOperation, parameters: Record<string, string | number> = {}): Promise<Record<string, unknown>> {
+    // A failed new request must not inherit the previous page's response type.
+    this.#lastDiagnostics = { operation: apiName };
     if (this.#upgradeRequired) throw new UpgradeRequired();
     if (!this.#token) throw new WeReadError("InvalidInput", "当前连接已关闭，请重新连接。");
     const controller = new AbortController();
     this.#active.add(controller);
     let timedOut = false;
+    let body: unknown;
     const timeout = setTimeout(() => { timedOut = true; controller.abort(); }, this.#timeoutMs);
     try {
       const response = await this.#fetch(WEREAD_GATEWAY, {
@@ -93,9 +150,9 @@ export class WeReadClient {
       if (this.#upgradeRequired) throw new UpgradeRequired();
       if (timedOut) throw new WeReadError("Timeout", "微信读书请求超时，请稍后重试。");
       // Inspect every JSON response for upgrade_info, including non-2xx responses.
-      let body: unknown;
       try { body = await response.json(); }
       catch { if (response.ok) return invalidResponse(); }
+      this.#lastDiagnostics = responseDiagnostics(apiName, body);
       const outer = record(body);
       if (outer) {
         if (Object.hasOwn(outer, "upgrade_info") || (record(outer.data) && Object.hasOwn(record(outer.data)!, "upgrade_info"))) {
@@ -114,12 +171,12 @@ export class WeReadClient {
       if (error instanceof UpgradeRequired || this.#upgradeRequired) {
         this.#upgradeRequired = true;
         this.#active.forEach(active => active.abort());
-        throw new UpgradeRequired();
+        throw new UpgradeRequired(responseDiagnostics(apiName, body));
       }
-      if (timedOut) throw new WeReadError("Timeout", "微信读书请求超时，请稍后重试。");
-      if (error instanceof WeReadError) throw error;
+      if (timedOut) throw new WeReadError("Timeout", "微信读书请求超时，请稍后重试。", responseDiagnostics(apiName, body));
+      if (error instanceof WeReadError) throw diagnosticError(error, apiName, body);
       // Neither raw gateway messages nor fetch errors are reflected or logged.
-      throw new WeReadError("NetworkError", "暂时无法连接微信读书，请检查网络或通过 JSON 导入阅读数据。");
+      throw new WeReadError("NetworkError", "暂时无法连接微信读书，请检查网络或通过 JSON 导入阅读数据。", responseDiagnostics(apiName, body));
     } finally { clearTimeout(timeout); this.#active.delete(controller); }
   }
 
@@ -269,29 +326,40 @@ export interface NotebookPage {
   totalNoteCount?: number;
 }
 function count(value: unknown): number | undefined { return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : undefined; }
+function paginationContinues(payload: Record<string, unknown>): boolean {
+  if (!Object.hasOwn(payload, "hasMore")) return false;
+  if (payload.hasMore === true || payload.hasMore === 1) return true;
+  if (payload.hasMore === false || payload.hasMore === 0) return false;
+  return invalidResponse();
+}
 
 export function normalizeNotebooks(response: unknown): NotebookPage {
-  const payload = unwrapWeReadResponse(response);
-  if (!Array.isArray(payload.books)) return invalidResponse();
-  const books: ReadingNotebook[] = payload.books.map(value => {
-    const item = record(value);
-    const book = record(item?.book);
-    if (!item || !book) return invalidResponse();
-    const highlightCount = count(item.noteCount);
-    const thoughtCount = count(item.reviewCount);
-    const bookmarkCount = count(item.bookmarkCount);
-    // readingProgress has no documented unit; fetch bookProgress before showing a percentage.
-    return { book: parseBook({ id: id(item.bookId), title: text(book.title), author: text(book.author) ?? "", kind: "ebook",
-      status: item.markedStatus === 1 ? "finished" : "reading", finished: item.markedStatus === 1,
-      cover: cover(book.cover), deepLink: deepLink(book.deepLink) }),
-      highlightCount, thoughtCount, bookmarkCount,
-      totalNoteCount: highlightCount === undefined || thoughtCount === undefined || bookmarkCount === undefined ? undefined : highlightCount + thoughtCount + bookmarkCount,
-      sort: count(item.sort) };
-  });
-  const hasMore = payload.hasMore === 1;
-  const nextLastSort = hasMore ? books.at(-1)?.sort : undefined;
-  if (hasMore && nextLastSort === undefined) return invalidResponse();
-  return { books, hasMore, nextLastSort, totalBookCount: count(payload.totalBookCount), totalNoteCount: count(payload.totalNoteCount) };
+  try {
+    const payload = unwrapWeReadResponse(response);
+    if (!Array.isArray(payload.books)) return invalidResponse();
+    const books: ReadingNotebook[] = payload.books.map(value => {
+      const item = record(value);
+      const book = record(item?.book);
+      if (!item || !book) return invalidResponse();
+      const highlightCount = count(item.noteCount);
+      const thoughtCount = count(item.reviewCount);
+      const bookmarkCount = count(item.bookmarkCount);
+      // readingProgress has no documented unit; fetch bookProgress before showing a percentage.
+      return { book: parseBook({ id: id(item.bookId), title: text(book.title), author: text(book.author) ?? "", kind: "ebook",
+        status: item.markedStatus === 1 ? "finished" : "reading", finished: item.markedStatus === 1,
+        cover: cover(book.cover), deepLink: deepLink(book.deepLink) }),
+        highlightCount, thoughtCount, bookmarkCount,
+        totalNoteCount: highlightCount === undefined || thoughtCount === undefined || bookmarkCount === undefined ? undefined : highlightCount + thoughtCount + bookmarkCount,
+        sort: count(item.sort) };
+    });
+    const hasMore = paginationContinues(payload);
+    const nextLastSort = hasMore ? books.at(-1)?.sort : undefined;
+    if (hasMore && nextLastSort === undefined) return invalidResponse();
+    return { books, hasMore, nextLastSort, totalBookCount: count(payload.totalBookCount), totalNoteCount: count(payload.totalNoteCount) };
+  } catch (error) {
+    if (error instanceof WeReadError) throw diagnosticError(error, "/user/notebooks", response);
+    throw error;
+  }
 }
 
 export const normalizeNotebook = normalizeNotebooks;
@@ -319,19 +387,24 @@ export function normalizeHighlights(response: unknown, bookId: string): ReadingH
 export interface ThoughtsPage { highlights: ReadingHighlight[]; hasMore: boolean; nextSynckey?: number; totalCount?: number; }
 export function normalizeThoughts(response: unknown, bookId: string): ThoughtsPage {
   requireText(bookId);
-  const payload = unwrapWeReadResponse(response);
-  if (!Array.isArray(payload.reviews)) return invalidResponse();
-  const highlights = payload.reviews.map(value => {
-    const wrapper = record(value);
-    const review = record(wrapper?.review);
-    if (!review || !id(review.reviewId)) return invalidResponse();
-    return parseHighlight({ id: `review:${id(review.reviewId)}`, bookId, text: text(review.abstract) ?? "", thought: text(review.content),
-      chapter: text(review.chapterName), createdAt: unixDate(review.createTime), deepLink: deepLink(review.deepLink ?? wrapper?.deepLink) });
-  });
-  const hasMore = payload.hasMore === 1;
-  const nextSynckey = hasMore ? count(payload.synckey) : undefined;
-  if (hasMore && nextSynckey === undefined) return invalidResponse();
-  return { highlights, hasMore, nextSynckey, totalCount: count(payload.totalCount) };
+  try {
+    const payload = unwrapWeReadResponse(response);
+    if (!Array.isArray(payload.reviews)) return invalidResponse();
+    const highlights = payload.reviews.map(value => {
+      const wrapper = record(value);
+      const review = record(wrapper?.review);
+      if (!review || !id(review.reviewId)) return invalidResponse();
+      return parseHighlight({ id: `review:${id(review.reviewId)}`, bookId, text: text(review.abstract) ?? "", thought: text(review.content),
+        chapter: text(review.chapterName), createdAt: unixDate(review.createTime), deepLink: deepLink(review.deepLink ?? wrapper?.deepLink) });
+    });
+    const hasMore = paginationContinues(payload);
+    const nextSynckey = hasMore ? count(payload.synckey) : undefined;
+    if (hasMore && nextSynckey === undefined) return invalidResponse();
+    return { highlights, hasMore, nextSynckey, totalCount: count(payload.totalCount) };
+  } catch (error) {
+    if (error instanceof WeReadError) throw diagnosticError(error, "/review/list/mine", response);
+    throw error;
+  }
 }
 
 export interface SearchPage { books: ReadingBook[]; hasMore: boolean; nextMaxIdx?: number; }
@@ -353,7 +426,7 @@ export function normalizeSearch(response: unknown): SearchPage {
       nextMaxIdx = count(item?.searchIdx) ?? nextMaxIdx;
     }
   }
-  const hasMore = payload.hasMore === 1;
+  const hasMore = paginationContinues(payload);
   if (hasMore && nextMaxIdx === undefined) return invalidResponse();
   return { books, hasMore, nextMaxIdx: hasMore ? nextMaxIdx : undefined };
 }

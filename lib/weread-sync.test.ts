@@ -111,7 +111,7 @@ describe("temporary WeRead synchronization (offline gateway mocks)", () => {
   it("detects a repeated notebook cursor and never returns partial data", async () => {
     const { client, bodies } = mocked(body => body.api_name === "/user/notebooks"
       ? { books: [notebook(body.lastSort === undefined ? "a" : "b", 10)], hasMore: 1 } : basic(body));
-    await expect(fetchWeReadLibrary(client, { now })).rejects.toMatchObject({ code: "PaginationError" });
+    await expect(fetchWeReadLibrary(client, { now })).rejects.toMatchObject({ code: "PaginationError", reason: "notebook_cursor_repeated" });
     expect(bodies.filter(body => body.api_name === "/user/notebooks")).toHaveLength(2);
     expect(bodies.some(body => body.api_name === "/book/bookmarklist")).toBe(false);
   });
@@ -123,7 +123,7 @@ describe("temporary WeRead synchronization (offline gateway mocks)", () => {
       if (body.api_name === "/review/list/mine") return { reviews: [thought(body.synckey === undefined ? "t1" : "t2")], hasMore: 1, synckey: 55 };
       return basic(body);
     });
-    await expect(fetchWeReadLibrary(client, { now })).rejects.toMatchObject({ code: "PaginationError" });
+    await expect(fetchWeReadLibrary(client, { now })).rejects.toMatchObject({ code: "PaginationError", reason: "thought_cursor_repeated" });
     expect(bodies.filter(body => body.api_name === "/review/list/mine")).toHaveLength(2);
   });
 
@@ -138,14 +138,14 @@ describe("temporary WeRead synchronization (offline gateway mocks)", () => {
   it("rejects an ending notebook or thought page that is short of its declared total", async () => {
     const notebookShortfall = mocked(body => body.api_name === "/user/notebooks"
       ? { totalBookCount: 2, books: [notebook("a")], hasMore: 0 } : basic(body));
-    await expect(fetchWeReadLibrary(notebookShortfall.client, { now })).rejects.toMatchObject({ code: "InvalidData" });
+    await expect(fetchWeReadLibrary(notebookShortfall.client, { now })).rejects.toMatchObject({ code: "InvalidData", reason: "notebook_total_shortfall" });
     const thoughtsShortfall = mocked(body => {
       if (body.api_name === "/user/notebooks") return { books: [notebook("a")], hasMore: 0 };
       if (body.api_name === "/book/bookmarklist") return { updated: [highlight("h", "a")] };
       if (body.api_name === "/review/list/mine") return { reviews: [thought("t")], totalCount: 2, hasMore: 0 };
       return basic(body);
     });
-    await expect(fetchWeReadLibrary(thoughtsShortfall.client, { now })).rejects.toMatchObject({ code: "InvalidData" });
+    await expect(fetchWeReadLibrary(thoughtsShortfall.client, { now })).rejects.toMatchObject({ code: "InvalidData", reason: "thought_total_shortfall" });
   });
 
   it("rejects note contents that are short of known notebook counts", async () => {
@@ -156,8 +156,36 @@ describe("temporary WeRead synchronization (offline gateway mocks)", () => {
         if (body.api_name === "/review/list/mine") return { reviews: [], hasMore: 0 };
         return basic(body);
       });
-      await expect(fetchWeReadLibrary(client, { now })).rejects.toMatchObject({ code: "InvalidData" });
+      await expect(fetchWeReadLibrary(client, { now })).rejects.toMatchObject({ code: "InvalidData",
+        reason: shortfall === "highlights" ? "highlight_count_mismatch" : "thought_notebook_count_mismatch" });
     }
+  });
+
+  it("reads complete notebook and thought sequences when pagination uses boolean flags", async () => {
+    const { client, bodies } = mocked(body => {
+      if (body.api_name === "/user/notebooks") return body.lastSort === undefined
+        ? { totalBookCount: 2, books: [notebook("a", 20, { reviewCount: 2 })], hasMore: true }
+        : { totalBookCount: 2, books: [notebook("b", 10, { reviewCount: 0 })], hasMore: false };
+      if (body.api_name === "/book/bookmarklist") return { updated: [highlight(`h-${body.bookId}`, String(body.bookId))] };
+      if (body.api_name === "/review/list/mine") return body.synckey === undefined
+        ? { totalCount: 2, reviews: [thought("first")], hasMore: true, synckey: 55 }
+        : { totalCount: 2, reviews: [thought("second")], hasMore: false };
+      return basic(body);
+    });
+    const result = await fetchWeReadLibrary(client, { now });
+    expect(result.books).toHaveLength(2);
+    expect(result.highlights).toHaveLength(4);
+    expect(bodies.filter(body => body.api_name === "/user/notebooks").map(body => body.lastSort)).toEqual([undefined, 20]);
+    expect(bodies.filter(body => body.api_name === "/review/list/mine").map(body => body.synckey)).toEqual([undefined, 55]);
+  });
+
+  it("identifies a changed notebook total without exposing any book metadata", async () => {
+    const { client } = mocked(body => body.api_name === "/user/notebooks"
+      ? body.lastSort === undefined
+        ? { totalBookCount: 2, books: [notebook("a", 20)], hasMore: 1 }
+        : { totalBookCount: 3, books: [notebook("b", 10)], hasMore: 0 }
+      : basic(body));
+    await expect(fetchWeReadLibrary(client, { now })).rejects.toMatchObject({ code: "InvalidData", reason: "notebook_total_changed" });
   });
 
   it("fully reads more than 80 notebook books across all pages", async () => {

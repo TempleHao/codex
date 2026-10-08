@@ -6,7 +6,9 @@ import { decryptReadingLibrary, MAX_READING_ENVELOPE_BYTES, readingEnvelopeSchem
 import { emptyReadingLibrary } from "../lib/reading";
 import type { ReadingLibrary } from "../lib/reading";
 import { WeReadError, WEREAD_GATEWAY } from "../lib/weread";
-import { WeReadSyncError } from "../lib/weread-sync";
+import type { WeReadDiagnostics } from "../lib/weread";
+import { fetchWeReadLibrary, WeReadSyncError } from "../lib/weread-sync";
+import type { WeReadSyncReason } from "../lib/weread-sync";
 import { atomicWrite, PreviousSnapshotLookupError, PREVIOUS_SYNC_URL, runWeReadSyncCli, runWeReadSyncJob, SYNC_FILENAME, SYNC_STATUS_FILENAME } from "./weread-sync-job";
 
 const now = new Date("2026-10-08T04:00:00.000Z");
@@ -42,14 +44,16 @@ function noNetwork() {
   return vi.fn<typeof globalThis.fetch>().mockRejectedValue(new Error("Unexpected network call"));
 }
 function fakeClient() {
-  return { shelf: vi.fn(), stats: vi.fn(), notebooks: vi.fn(), highlights: vi.fn(), thoughts: vi.fn(), disconnect: vi.fn() };
+  return { shelf: vi.fn(), stats: vi.fn(), notebooks: vi.fn(), highlights: vi.fn(), thoughts: vi.fn(), disconnect: vi.fn(),
+    getLastDiagnostics: vi.fn<() => WeReadDiagnostics | undefined>() };
 }
 function offlineDependencies() {
   const client = fakeClient();
   return {
     client, fetch: noNetwork(), now: () => now,
-    createClient: vi.fn(() => client), fetchLibrary: vi.fn(async () => library),
+    createClient: vi.fn(() => client), fetchLibrary: vi.fn<typeof fetchWeReadLibrary>().mockResolvedValue(library),
     encrypt: vi.fn(async () => oldEnvelope), decrypt: vi.fn(async () => emptyReadingLibrary()),
+    onDiagnostic: vi.fn(),
   };
 }
 async function readStatus() { return JSON.parse(await readFile(path.join(output, SYNC_STATUS_FILENAME), "utf8")); }
@@ -133,7 +137,7 @@ describe("free GitHub WeRead encrypted synchronization job", () => {
     }
     expect(await decryptReadingLibrary(text, passphrase)).toEqual(library);
     expect(await readdir(output)).toEqual([SYNC_STATUS_FILENAME, SYNC_FILENAME].sort());
-    expect(deps.fetchLibrary).toHaveBeenCalledWith(deps.client, { now, includeNotes: false });
+    expect(deps.fetchLibrary).toHaveBeenCalledWith(deps.client, { now, includeNotes: false, onProgress: expect.any(Function) });
     expect(deps.client.disconnect).toHaveBeenCalledOnce();
   });
 
@@ -187,7 +191,7 @@ describe("free GitHub WeRead encrypted synchronization job", () => {
     expect(await readCipher()).toEqual(oldEnvelope);
     deps.fetchLibrary.mockResolvedValue(library);
     expect(await runWeReadSyncJob(environment({ WEREAD_SYNC_RESET_HISTORY: "true", WEREAD_SYNC_INCLUDE_NOTES: "true" }), deps)).toMatchObject({ state: "ready" });
-    expect(deps.fetchLibrary).toHaveBeenLastCalledWith(deps.client, { now, includeNotes: true });
+    expect(deps.fetchLibrary).toHaveBeenLastCalledWith(deps.client, { now, includeNotes: true, onProgress: expect.any(Function) });
     expect(deps.encrypt).toHaveBeenLastCalledWith(library, passphrase);
   });
 
@@ -216,6 +220,82 @@ describe("free GitHub WeRead encrypted synchronization job", () => {
     expect(deps.encrypt).not.toHaveBeenCalled();
     expect(JSON.stringify(status)).not.toContain(token);
     expect(JSON.stringify(status)).not.toContain(library.books[0].title);
+  });
+
+  it("reports only a fixed reason, stage and response shape when notebook completeness fails", async () => {
+    const deps = offlineDependencies();
+    deps.client.getLastDiagnostics.mockReturnValue({ operation: "/user/notebooks", gatewayCode: 0, responsePaginationType: "boolean" });
+    deps.fetchLibrary.mockImplementation(async (_client, options) => {
+      options?.onProgress?.({ stage: "notebooks", message: `${token} ${library.books[0].title}`, completed: 123_456, total: 789_012 });
+      throw new WeReadSyncError("InvalidData", `${passphrase} ${library.highlights[0].text}`, undefined, "notebook_total_shortfall");
+    });
+    const status = await runWeReadSyncJob(environment(), deps);
+    expect(status).toEqual({ version: 1, state: "failed", updatedAt: now.toISOString(), failureCode: "invalid_data" });
+    expect(deps.onDiagnostic).toHaveBeenCalledExactlyOnceWith({ stage: "notebooks", reason: "notebook_total_shortfall",
+      operation: "/user/notebooks", gatewayCode: 0, responsePaginationType: "boolean" });
+    const diagnosticText = JSON.stringify(deps.onDiagnostic.mock.calls);
+    for (const text of [token, passphrase, library.books[0].title, library.highlights[0].text, "123456", "789012"]) expect(diagnosticText).not.toContain(text);
+    expect(await readStatus()).toEqual(status);
+  });
+
+  it("rejects arbitrary diagnostic fields and progress stages rather than reflecting them into logs", async () => {
+    const deps = offlineDependencies();
+    deps.client.getLastDiagnostics.mockReturnValue({ operation: `/private?key=${token}`, gatewayCode: Infinity,
+      responsePaginationType: library.books[0].title, bookId: library.books[0].id } as unknown as WeReadDiagnostics);
+    deps.fetchLibrary.mockImplementation(async (_client, options) => {
+      options?.onProgress?.({ stage: token, message: passphrase } as never);
+      throw new WeReadSyncError("InvalidData", passphrase, undefined, token as WeReadSyncReason);
+    });
+    await runWeReadSyncJob(environment(), deps);
+    expect(deps.onDiagnostic).toHaveBeenCalledExactlyOnceWith({ stage: "shelf" });
+  });
+
+  it("reads dynamic diagnostic getters once and publishes only their validated primitive values", async () => {
+    const deps = offlineDependencies();
+    const reads = { operation: 0, code: 0, type: 0, stage: 0, reason: 0 };
+    deps.client.getLastDiagnostics.mockReturnValue({
+      get operation() { return ++reads.operation === 1 ? "/shelf/sync" : token; },
+      get gatewayCode() { return ++reads.code === 1 ? 0 : passphrase; },
+      get responsePaginationType() { return ++reads.type === 1 ? "boolean" : library.books[0].title; },
+    } as unknown as WeReadDiagnostics);
+    const failure = new WeReadSyncError("InvalidData", passphrase);
+    Object.defineProperty(failure, "reason", { get() { return ++reads.reason === 1 ? "invalid_sync_date" : token; } });
+    deps.fetchLibrary.mockImplementation(async (_client, options) => {
+      options?.onProgress?.({ get stage() { return ++reads.stage === 1 ? "notes" : passphrase; }, message: token } as never);
+      throw failure;
+    });
+    await runWeReadSyncJob(environment(), deps);
+    expect(reads).toEqual({ operation: 1, code: 1, type: 1, stage: 1, reason: 1 });
+    expect(deps.onDiagnostic).toHaveBeenCalledExactlyOnceWith({ stage: "notes", reason: "invalid_sync_date",
+      operation: "/shelf/sync", gatewayCode: 0, responsePaginationType: "boolean" });
+    const text = JSON.stringify(deps.onDiagnostic.mock.calls);
+    for (const privateText of [token, passphrase, library.books[0].title]) expect(text).not.toContain(privateText);
+  });
+
+  it("uses sanitized error diagnostics before a client's last response and keeps them out of public status", async () => {
+    const deps = offlineDependencies();
+    deps.client.getLastDiagnostics.mockReturnValue({ operation: "/shelf/sync", gatewayCode: 0 });
+    deps.fetchLibrary.mockImplementation(async (_client, options) => {
+      options?.onProgress?.({ stage: "stats", message: token });
+      throw new WeReadError("BusinessError", passphrase, { operation: "/readdata/detail", gatewayCode: -123, responsePaginationType: "missing" });
+    });
+    expect(await runWeReadSyncJob(environment(), deps)).toEqual({ version: 1, state: "failed", updatedAt: now.toISOString(), failureCode: "read_failed" });
+    expect(deps.onDiagnostic).toHaveBeenCalledExactlyOnceWith({ stage: "stats", operation: "/readdata/detail", gatewayCode: -123, responsePaginationType: "missing" });
+    expect(await readStatus()).not.toHaveProperty("gatewayCode");
+  });
+
+  it("prints only safe operation and numeric gateway code for a real CLI business-error response", async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(new Response(JSON.stringify({ errcode: -123, errmsg: `${token} ${passphrase} ${library.books[0].title}` })));
+    vi.stubGlobal("fetch", fetch);
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    expect(await runWeReadSyncCli(environment())).toBe(true);
+    const publicText = JSON.stringify([log.mock.calls, error.mock.calls]);
+    expect(publicText).toContain("WeRead sync diagnostic:");
+    expect(publicText).toContain("/shelf/sync");
+    expect(publicText).toContain("-123");
+    for (const text of [token, passphrase, library.books[0].title]) expect(publicText).not.toContain(text);
+    expect(await readStatus()).toMatchObject({ state: "failed", failureCode: "read_failed" });
   });
 
   it("rejects oversized, corrupted or plaintext previous files rather than publishing them", async () => {

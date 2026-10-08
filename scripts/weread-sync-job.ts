@@ -8,8 +8,9 @@ import type { ReadingLibrary } from "../lib/reading";
 import { readingSyncStatusSchema } from "../lib/reading-sync-status";
 import type { ReadingSyncStatus } from "../lib/reading-sync-status";
 import { WeReadClient, WeReadError, UpgradeRequired } from "../lib/weread";
-import { fetchWeReadLibrary, WeReadSyncError } from "../lib/weread-sync";
-import type { WeReadSyncClient } from "../lib/weread-sync";
+import type { WeReadDiagnostics, WeReadOperation } from "../lib/weread";
+import { fetchWeReadLibrary, WEREAD_SYNC_REASONS, WeReadSyncError } from "../lib/weread-sync";
+import type { WeReadSyncClient, WeReadSyncProgress, WeReadSyncReason } from "../lib/weread-sync";
 
 export const SYNC_FILENAME = "weread-sync.json";
 export const SYNC_STATUS_FILENAME = "weread-sync-status.json";
@@ -24,7 +25,19 @@ export class PreviousSnapshotLookupError extends Error {
 
 type Environment = Record<string, string | undefined>;
 type FailureCode = NonNullable<ReadingSyncStatus["failureCode"]>;
-type SyncClient = WeReadSyncClient & { disconnect?: () => void };
+type SyncClient = WeReadSyncClient & { disconnect?: () => void; getLastDiagnostics?: () => WeReadDiagnostics | undefined };
+
+export interface SyncFailureDiagnostic {
+  stage: WeReadSyncProgress["stage"];
+  reason?: WeReadSyncReason;
+  operation?: WeReadOperation;
+  gatewayCode?: number;
+  responsePaginationType?: WeReadDiagnostics["responsePaginationType"];
+}
+
+const STAGES = ["shelf", "stats", "notebooks", "notes", "complete"] as const;
+const OPERATIONS = ["/shelf/sync", "/readdata/detail", "/user/notebooks", "/book/bookmarklist", "/review/list/mine", "/store/search", "/book/getprogress"] as const;
+const PAGINATION_TYPES = ["boolean", "number", "missing", "other"] as const;
 
 export interface SyncJobDependencies {
   fetch?: typeof globalThis.fetch;
@@ -34,6 +47,7 @@ export interface SyncJobDependencies {
   decrypt?: typeof decryptReadingLibrary;
   writeAtomic?: typeof atomicWrite;
   now?: () => Date;
+  onDiagnostic?: (diagnostic: SyncFailureDiagnostic) => void;
 }
 
 /** Publish only a complete file. A failure never truncates the prior ciphertext. */
@@ -148,6 +162,32 @@ function failureCode(error: unknown, lastHttpStatus?: number): FailureCode {
   return "read_failed";
 }
 
+/** Revalidate every diagnostic value before sending it to a public job log. */
+function safeFailureDiagnostic(error: unknown, stage: WeReadSyncProgress["stage"], client?: SyncClient): SyncFailureDiagnostic {
+  const diagnostic: SyncFailureDiagnostic = { stage };
+  if (error instanceof WeReadSyncError) {
+    const suppliedReason = error.reason;
+    const reason = WEREAD_SYNC_REASONS.find(value => value === suppliedReason);
+    if (reason) diagnostic.reason = reason;
+  }
+  let details: unknown;
+  try { details = (error instanceof WeReadError ? error.diagnostics : undefined) ?? client?.getLastDiagnostics?.(); }
+  catch { /* Diagnostics are optional and can never prevent preservation. */ }
+  if (details !== null && typeof details === "object" && !Array.isArray(details)) {
+    const record = details as Record<string, unknown>;
+    const suppliedOperation = record.operation;
+    const operation = OPERATIONS.find(value => value === suppliedOperation);
+    if (operation) diagnostic.operation = operation;
+    const gatewayCode = record.gatewayCode;
+    if (typeof gatewayCode === "number" && Number.isInteger(gatewayCode)
+      && gatewayCode >= -2_147_483_648 && gatewayCode <= 2_147_483_647) diagnostic.gatewayCode = gatewayCode;
+    const suppliedType = record.responsePaginationType;
+    const paginationType = PAGINATION_TYPES.find(value => value === suppliedType);
+    if (paginationType) diagnostic.responsePaginationType = paginationType;
+  }
+  return diagnostic;
+}
+
 /**
  * Secrets and plaintext exist only in memory. The only published data is a
  * validated encrypted reading envelope and a small fixed-enumeration status.
@@ -164,6 +204,7 @@ export async function runWeReadSyncJob(env: Environment, dependencies: SyncJobDe
   let nextEnvelope: ReadingEnvelope | null = previous;
   let lastHttpStatus: number | undefined;
   let client: SyncClient | undefined;
+  let stage: WeReadSyncProgress["stage"] = "shelf";
 
   const missing = !(env.WEREAD_API_KEY?.trim() && env.WEREAD_SYNC_PASSPHRASE?.trim());
   if (missing) {
@@ -189,13 +230,21 @@ export async function runWeReadSyncJob(env: Environment, dependencies: SyncJobDe
         client = (dependencies.createClient ?? ((token, fetch) => new WeReadClient({ token, fetch })))(env.WEREAD_API_KEY!, transport);
         const parsed = readingLibrarySchema.safeParse(await (dependencies.fetchLibrary ?? fetchWeReadLibrary)(client, {
           now, includeNotes: env.WEREAD_SYNC_INCLUDE_NOTES === "true",
+          // Never retain progress messages, private counts or arbitrary fields.
+          onProgress: progress => {
+            const suppliedStage = progress.stage;
+            const knownStage = STAGES.find(value => value === suppliedStage);
+            if (knownStage) stage = knownStage;
+          },
         }));
-        if (!parsed.success) throw new WeReadSyncError("InvalidData", "Invalid reading snapshot");
+        if (!parsed.success) throw new WeReadSyncError("InvalidData", "Invalid reading snapshot", undefined, "library_schema_invalid");
         const incoming = parsed.data;
         const library = before ? mergeReadingLibraries(before, incoming) : incoming;
         nextEnvelope = readingEnvelopeSchema.parse(await (dependencies.encrypt ?? encryptReadingLibrary)(library, env.WEREAD_SYNC_PASSPHRASE!));
         status = { version: 1, state: "ready", updatedAt };
       } catch (error) {
+        try { dependencies.onDiagnostic?.(safeFailureDiagnostic(error, stage, client)); }
+        catch { /* Logging failure never discards a preserved snapshot. */ }
         status = { version: 1, state: previous ? "preserved" : "failed", updatedAt, failureCode: failureCode(error, lastHttpStatus) };
       } finally { client?.disconnect?.(); }
     }
@@ -220,7 +269,9 @@ const SUMMARIES: Record<ReadingSyncStatus["state"], string> = {
 
 export async function runWeReadSyncCli(env: Environment = process.env): Promise<boolean> {
   try {
-    const status = await runWeReadSyncJob(env);
+    const status = await runWeReadSyncJob(env, {
+      onDiagnostic: diagnostic => console.log(`WeRead sync diagnostic: ${JSON.stringify(diagnostic)}`),
+    });
     const summary = `${SUMMARIES[status.state]}${status.failureCode ? ` Status: ${status.failureCode}.` : ""}\n`;
     console.log(summary.trim());
     if (env.GITHUB_STEP_SUMMARY) await appendFile(env.GITHUB_STEP_SUMMARY, `### WeRead synchronization\n\n${summary}`);

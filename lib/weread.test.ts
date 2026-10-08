@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { normalizeBookProgress, normalizeHighlights, normalizeNotebooks, normalizeSearch, normalizeShelf, normalizeStats, normalizeThoughts, UpgradeRequired, unwrapWeReadResponse, WeReadClient, WEREAD_GATEWAY } from "./weread";
+import { normalizeBookProgress, normalizeHighlights, normalizeNotebooks, normalizeSearch, normalizeShelf, normalizeStats, normalizeThoughts, UpgradeRequired, unwrapWeReadResponse, WeReadClient, WeReadError, WEREAD_GATEWAY } from "./weread";
 
 const response = (value: unknown, status = 200) => new Response(JSON.stringify(value), { status, headers: { "content-type": "application/json" } });
 const mockClient = (value: unknown = { errcode: 0 }) => {
@@ -110,6 +110,102 @@ describe("official read-only gateway client (all requests mocked)", () => {
     expect(fetch).not.toHaveBeenCalled();
     expect(JSON.stringify(client)).toBe("{}");
   });
+
+  it("retains only fixed diagnostics from successful wrapped responses", async () => {
+    const { client } = mockClient({ errcode: 0, hasMore: "private-outer-type", data: {
+      books: [{ bookId: "private-book-id", title: "private-title" }], hasMore: true,
+      token: "private-returned-token", errmsg: "private-server-message",
+    } });
+    await client.notebooks();
+    expect(client.getLastDiagnostics()).toEqual({ operation: "/user/notebooks", gatewayCode: 0, responsePaginationType: "boolean" });
+    const copy = client.getLastDiagnostics()!;
+    copy.operation = "/shelf/sync";
+    expect(client.getLastDiagnostics()?.operation).toBe("/user/notebooks");
+    expect(JSON.stringify(client)).toBe("{}");
+  });
+
+  it("adds safe diagnostics to direct and wrapped business failures without reflecting content", async () => {
+    for (const value of [
+      { errcode: -2010, hasMore: 1, errmsg: "private-gateway-message" },
+      { errcode: 0, data: { errcode: -2010, hasMore: 1, errmsg: "private-gateway-message" } },
+    ]) {
+      const { client } = mockClient(value);
+      const error = await client.thoughts("private-book-id").catch(error => error);
+      expect(error).toBeInstanceOf(WeReadError);
+      expect(error.diagnostics).toEqual({ operation: "/review/list/mine", gatewayCode: -2010, responsePaginationType: "number" });
+      expect(JSON.stringify(error)).not.toMatch(/private-|demo-runtime-only/);
+      expect(error.message).toBe("微信读书暂时无法返回数据，请检查连接后重试。");
+    }
+  });
+
+  it("clears prior response metadata before a new network failure", async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>()
+      .mockResolvedValueOnce(response({ books: [], hasMore: 1, errcode: 0 }))
+      .mockRejectedValueOnce(new Error("private-network-token"));
+    const client = new WeReadClient({ token: "private-auth-token", fetch });
+    await client.notebooks();
+    const error = await client.stats().catch(error => error);
+    expect(error).toMatchObject({ code: "NetworkError", diagnostics: { operation: "/readdata/detail" } });
+    expect(error.diagnostics).not.toHaveProperty("responsePaginationType");
+    expect(client.getLastDiagnostics()).toEqual({ operation: "/readdata/detail" });
+    expect(JSON.stringify(error)).not.toContain("private-");
+  });
+
+  it("classifies pagination using only fixed types and bounds gateway codes", async () => {
+    for (const [pagination, responsePaginationType] of [[false, "boolean"], [0, "number"], ["private", "other"], [null, "other"]] as const) {
+      const { client } = mockClient({ errcode: -1, hasMore: pagination });
+      await expect(client.notebooks()).rejects.toMatchObject({ diagnostics: { operation: "/user/notebooks", gatewayCode: -1, responsePaginationType } });
+    }
+    for (const code of [-2_147_483_648, 2_147_483_647]) {
+      const { client } = mockClient({ errcode: code });
+      await expect(client.shelf()).rejects.toMatchObject({ diagnostics: { operation: "/shelf/sync", gatewayCode: code, responsePaginationType: "missing" } });
+    }
+    for (const code of ["private-code", 1.5, -2_147_483_649, 2_147_483_648, null]) {
+      const { client } = mockClient({ errcode: code });
+      const error = await client.shelf().catch(error => error);
+      expect(error.diagnostics).toEqual({ operation: "/shelf/sync", responsePaginationType: "missing" });
+    }
+  });
+
+  it("whitelists diagnostics fields and prevents subsequent mutation", () => {
+    const source = { operation: "/user/notebooks", gatewayCode: -1, responsePaginationType: "boolean", raw: "private", bookId: "private" };
+    const error = new WeReadError("InvalidResponse", "fixed", source as never);
+    source.gatewayCode = -2;
+    expect(error.diagnostics).toEqual({ operation: "/user/notebooks", gatewayCode: -1, responsePaginationType: "boolean" });
+    expect(Object.isFrozen(error.diagnostics)).toBe(true);
+    expect(new WeReadError("InvalidResponse", "fixed", { operation: "/private-operation" } as never).diagnostics).toBeUndefined();
+    expect(new WeReadError("InvalidResponse", "fixed", { operation: "/user/notebooks", gatewayCode: Infinity, responsePaginationType: "private" } as never).diagnostics)
+      .toEqual({ operation: "/user/notebooks" });
+  });
+
+  it("reads diagnostics accessors once and omits metadata if an accessor throws", () => {
+    const reads = { operation: 0, gatewayCode: 0, responsePaginationType: 0 };
+    const changing = {
+      get operation() { return ++reads.operation === 1 ? "/user/notebooks" : "private-operation"; },
+      get gatewayCode() { return ++reads.gatewayCode === 1 ? -1 : "private-code"; },
+      get responsePaginationType() { return ++reads.responsePaginationType === 1 ? "boolean" : "private-pagination"; },
+    };
+    const error = new WeReadError("InvalidResponse", "fixed", changing as never);
+    expect(reads).toEqual({ operation: 1, gatewayCode: 1, responsePaginationType: 1 });
+    expect(error.diagnostics).toEqual({ operation: "/user/notebooks", gatewayCode: -1, responsePaginationType: "boolean" });
+    expect(JSON.stringify(error)).not.toContain("private-");
+    const throwing = { get operation() { throw new Error("private-accessor-message"); } };
+    const fixed = new WeReadError("InvalidResponse", "fixed", throwing as never);
+    expect(fixed.diagnostics).toBeUndefined();
+    expect(fixed.message).toBe("fixed");
+    expect(JSON.stringify(fixed)).not.toContain("private-");
+  });
+
+  it("preserves upgrade halting while adding only fixed response metadata", async () => {
+    const { client, fetch } = mockClient({ errcode: 0, data: { upgrade_info: { message: "private-message" }, hasMore: false } });
+    const error = await client.notebooks().catch(error => error);
+    expect(error).toBeInstanceOf(UpgradeRequired);
+    expect(error.diagnostics).toEqual({ operation: "/user/notebooks", gatewayCode: 0, responsePaginationType: "boolean" });
+    await expect(client.thoughts("private-book")).rejects.toBeInstanceOf(UpgradeRequired);
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(client.getLastDiagnostics()).toEqual({ operation: "/review/list/mine" });
+    expect(JSON.stringify(error)).not.toContain("private-");
+  });
 });
 
 describe("documented WeRead normalizers", () => {
@@ -159,6 +255,34 @@ describe("documented WeRead normalizers", () => {
     expect(() => normalizeNotebooks({ books: [], hasMore: 1 })).toThrow();
   });
 
+  it("continues boolean notebook and thought pages with their documented cursors", () => {
+    const books = [{ bookId: "demo", book: { title: "示例书籍" }, sort: 123 }];
+    const reviews = [{ review: { reviewId: "r", content: "示例想法" } }];
+    for (const hasMore of [true, 1]) {
+      expect(normalizeNotebooks({ books, hasMore })).toMatchObject({ hasMore: true, nextLastSort: 123 });
+      expect(normalizeThoughts({ reviews, hasMore, synckey: 456 }, "demo")).toMatchObject({ hasMore: true, nextSynckey: 456 });
+      expect(() => normalizeNotebooks({ books: [], hasMore })).toThrow();
+      expect(() => normalizeThoughts({ reviews, hasMore }, "demo")).toThrow();
+    }
+    for (const hasMore of [false, 0]) {
+      expect(normalizeNotebooks({ books, hasMore })).toMatchObject({ hasMore: false, nextLastSort: undefined });
+      expect(normalizeThoughts({ reviews, hasMore, synckey: 456 }, "demo")).toMatchObject({ hasMore: false, nextSynckey: undefined });
+    }
+    expect(normalizeNotebooks({ books: [] }).hasMore).toBe(false);
+    expect(normalizeThoughts({ reviews: [] }, "demo").hasMore).toBe(false);
+  });
+
+  it("rejects illegal pagination values instead of silently ending a partial export", () => {
+    const books = [{ bookId: "demo", book: { title: "示例书籍" }, sort: 123 }];
+    const reviews = [{ review: { reviewId: "r", content: "示例想法" } }];
+    for (const hasMore of ["1", "true", 2, -1, 0.5, null, {}, undefined]) {
+      expect(() => normalizeNotebooks({ books, hasMore })).toThrowError(expect.objectContaining({ code: "InvalidResponse" }));
+      expect(() => normalizeThoughts({ reviews, hasMore, synckey: 456 }, "demo"))
+        .toThrowError(expect.objectContaining({ code: "InvalidResponse" }));
+      expect(() => normalizeSearch({ results: [], hasMore })).toThrowError(expect.objectContaining({ code: "InvalidResponse" }));
+    }
+  });
+
   it("maps highlight text and chapter names while excluding bookmark contents", () => {
     const notes = normalizeHighlights({ updated: [{ bookmarkId: "skip", type: 0 }, { bookmarkId: "h", bookId: "demo", type: 1, chapterUid: 7, markText: "示例划线", createTime: 1791389400 }], chapters: [{ chapterUid: 7, title: "示例章节" }] }, "demo");
     expect(notes).toEqual([{ id: "h", bookId: "demo", text: "示例划线", chapter: "示例章节", createdAt: "2026-10-08" }]);
@@ -181,5 +305,36 @@ describe("documented WeRead normalizers", () => {
     expect(() => normalizeShelf({ result: { books: [] } })).toThrow();
     expect(() => unwrapWeReadResponse({ data: { errcode: -1, errmsg: "private" } })).toThrow();
     expect(normalizeShelf({ books: [{ bookId: "demo", title: "示例", deepLink: "javascript:alert(1)" }] })[0].deepLink).toBeUndefined();
+  });
+
+  it("retains boolean pagination diagnostics for malformed notebook and thought payloads", () => {
+    for (const hasMore of [true, false]) {
+      for (const wrapped of [false, true]) {
+        const payload = { books: "private-books", reviews: "private-reviews", hasMore, errcode: 0 };
+        const value = wrapped ? { data: payload } : payload;
+        for (const [normalize, operation] of [
+          [() => normalizeNotebooks(value), "/user/notebooks"],
+          [() => normalizeThoughts(value, "private-book-id"), "/review/list/mine"],
+        ] as const) {
+          let failure: unknown;
+          try { normalize(); } catch (error) { failure = error; }
+          expect(failure).toBeInstanceOf(WeReadError);
+          expect(failure).toMatchObject({ code: "InvalidResponse", diagnostics: { operation, gatewayCode: 0, responsePaginationType: "boolean" } });
+          expect(JSON.stringify(failure)).not.toContain("private-");
+        }
+      }
+    }
+  });
+
+  it("keeps missing/other pagination and business codes safe in normalizer failures", () => {
+    for (const value of [{ books: null }, { data: { reviews: null, hasMore: "private-pagination" } }]) {
+      let failure: unknown;
+      try { normalizeNotebooks(value); } catch (error) { failure = error; }
+      expect(failure).toMatchObject({ code: "InvalidResponse", diagnostics: { operation: "/user/notebooks",
+        responsePaginationType: Object.hasOwn(value, "data") ? "other" : "missing" } });
+      expect(JSON.stringify(failure)).not.toContain("private-");
+    }
+    expect(() => normalizeThoughts({ data: { errcode: -1, hasMore: true, errmsg: "private-message" } }, "private-id"))
+      .toThrowError(expect.objectContaining({ code: "BusinessError", diagnostics: { operation: "/review/list/mine", gatewayCode: -1, responsePaginationType: "boolean" } }));
   });
 });
