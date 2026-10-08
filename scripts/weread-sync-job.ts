@@ -270,7 +270,13 @@ const SUMMARIES: Record<ReadingSyncStatus["state"], string> = {
 export async function runWeReadSyncCli(env: Environment = process.env): Promise<boolean> {
   try {
     const status = await runWeReadSyncJob(env, {
-      onDiagnostic: diagnostic => console.log(`WeRead sync diagnostic: ${JSON.stringify(diagnostic)}`),
+      onDiagnostic: diagnostic => {
+        const safeText = JSON.stringify(diagnostic);
+        console.log(`WeRead sync diagnostic: ${safeText}`);
+        // These values have already passed the closed allowlists above. A CI
+        // annotation makes the same safe diagnosis available through Checks.
+        if (env.GITHUB_ACTIONS === "true") console.log(`::warning title=WeRead sync diagnostic::${safeText}`);
+      },
     });
     const summary = `${SUMMARIES[status.state]}${status.failureCode ? ` Status: ${status.failureCode}.` : ""}\n`;
     console.log(summary.trim());

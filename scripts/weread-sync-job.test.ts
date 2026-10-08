@@ -294,8 +294,34 @@ describe("free GitHub WeRead encrypted synchronization job", () => {
     expect(publicText).toContain("WeRead sync diagnostic:");
     expect(publicText).toContain("/shelf/sync");
     expect(publicText).toContain("-123");
+    expect(publicText).not.toContain("::warning title=WeRead sync diagnostic::");
     for (const text of [token, passphrase, library.books[0].title]) expect(publicText).not.toContain(text);
     expect(await readStatus()).toMatchObject({ state: "failed", failureCode: "read_failed" });
+  });
+
+  it("adds a CI warning annotation containing only the already sanitized synchronization diagnosis", async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>().mockImplementation(async (_url, init) => {
+      const body = JSON.parse(String(init?.body));
+      if (body.api_name === "/shelf/sync") return new Response(JSON.stringify({ books: [{ bookId: library.books[0].id, title: library.books[0].title, author: "作者" }], albums: [] }));
+      if (body.api_name === "/readdata/detail") return new Response(JSON.stringify({ totalReadTime: 600, baseTime: 0 }));
+      if (body.api_name === "/user/notebooks") return new Response(JSON.stringify({ errcode: 0, totalBookCount: 2, hasMore: false,
+        books: [{ bookId: library.books[0].id, book: { title: library.books[0].title, author: "作者" }, noteCount: 1, reviewCount: 1, sort: 1 }],
+        errmsg: `${token} ${passphrase} ${library.highlights[0].text}` }));
+      throw new Error("Unexpected offline CI test request");
+    });
+    vi.stubGlobal("fetch", fetch);
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    expect(await runWeReadSyncCli(environment({ GITHUB_ACTIONS: "true", WEREAD_SYNC_INCLUDE_NOTES: "true" }))).toBe(true);
+    const prefix = "::warning title=WeRead sync diagnostic::";
+    const annotations = log.mock.calls.map(([value]) => String(value)).filter(value => value.startsWith(prefix));
+    expect(annotations).toHaveLength(1);
+    expect(JSON.parse(annotations[0].slice(prefix.length))).toEqual({ stage: "notebooks", reason: "notebook_total_shortfall",
+      operation: "/user/notebooks", gatewayCode: 0, responsePaginationType: "boolean" });
+    const publicText = JSON.stringify([log.mock.calls, error.mock.calls]);
+    for (const privateText of [token, passphrase, library.books[0].id, library.books[0].title, library.highlights[0].text]) expect(publicText).not.toContain(privateText);
+    expect(await readStatus()).toMatchObject({ state: "failed", failureCode: "invalid_data" });
+    expect(await readStatus()).not.toHaveProperty("reason");
   });
 
   it("rejects oversized, corrupted or plaintext previous files rather than publishing them", async () => {
