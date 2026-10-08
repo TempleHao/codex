@@ -41,6 +41,7 @@ for host in ["walter-r2.trakt.tv", "walter.trakt.tv"]:
         result["dns"][host] = {"resolved": True}
     except socket.gaierror as error:
         result["dns"][host] = {"resolved": False, "detail": str(error)}
+result["publicFallback"] = probe("https://images.metahub.space/poster/medium/tt1375666/img", {"Origin": ORIGIN})
 # The public title page may reveal a current poster when the guide sample is old.
 try:
     with urllib.request.urlopen("https://trakt.tv/movies/inception-2010", timeout=20) as response:
