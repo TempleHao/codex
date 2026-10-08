@@ -4,6 +4,17 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      include_notes:
+        description: "Also sync highlights and thoughts (up to 80 notebook books)"
+        type: boolean
+        default: false
+      reset_history:
+        description: "Rebuild cloud reading history after losing the passphrase; browser records stay intact"
+        type: boolean
+        default: false
+  schedule:
+    - cron: "17 1,13 * * *"
 
 permissions:
   contents: read
@@ -15,6 +26,7 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     permissions:
       contents: read
       pages: read
@@ -43,16 +55,28 @@ jobs:
         run: npm run build:preview
         env:
           LIFE_BASE_PATH: ${{ steps.pages.outputs.base_path }}
+      - name: Sync and encrypt WeRead data
+        id: weread
+        run: node scripts/run-weread-sync.mjs
+        env:
+          WEREAD_API_KEY: ${{ secrets.WEREAD_API_KEY }}
+          WEREAD_SYNC_PASSPHRASE: ${{ secrets.WEREAD_SYNC_PASSPHRASE }}
+          WEREAD_SYNC_INCLUDE_NOTES: ${{ inputs.include_notes || false }}
+          WEREAD_SYNC_RESET_HISTORY: ${{ inputs.reset_history || false }}
+          LIFE_SYNC_OUTPUT_DIR: preview-out
+          LIFE_SYNC_PREVIOUS_URL: https://templehao.github.io/codex/weread-sync.json
       - name: Check export
         run: test -f preview-out/index.html
       - name: Upload static application
         uses: actions/upload-pages-artifact@v3
         with:
           path: preview-out
+          retention-days: 1
 
   deploy:
     needs: build
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       pages: write
       id-token: write

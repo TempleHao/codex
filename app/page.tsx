@@ -10,7 +10,7 @@ import { mergeReadingLibraries, type ReadingLibrary } from "@/lib/reading";
 import ReadingPanel, { type ReadingTaskDraft, type ReadingThoughtDraft } from "@/components/ReadingPanel";
 import ThoughtsPanel from "@/components/ThoughtsPanel";
 import LifeBoard from "@/components/LifeBoard";
-import WeReadConnect from "@/components/WeReadConnect";
+import WeReadSync from "@/components/WeReadSync";
 import { MAX_BACKUP_BYTES } from "@/lib/backup";
 
 type TaskView = "today" | "inbox" | "all" | "done";
@@ -292,7 +292,7 @@ export default function Home() {
         <aside className="right-column"><section className="collection-card"><div className="collection-icon"><Icon name="spark" size={24}/></div><p className="section-kicker">日常事务收集</p><h2>想到哪里，<br/>就先说到哪里。</h2><p className="collection-description">需要处理的琐事和安排，<br/>可以通过聊天整理后放在这里。</p><ol className="collection-steps"><li><span>01</span><div>在聊天里随意说<p>像和朋友聊天，不用先整理。</p></div></li><li><span>02</span><div>让助手拆成待办<p>复制整理好的 JSON 或清单。</p></div></li><li><span>03</span><div>在这里检查、保存<p>日期、领域和细节，由你定。</p></div></li></ol><button className="button collection-action" onClick={openImport} disabled={loading || loadFailed}>导入整理结果<Icon name="arrow" size={17}/></button><p className="collection-note">不会自动读取当前聊天。</p></section><section className="small-note"><Icon name="leaf" size={18}/><p>不用给每件事都安排今天。<br/>留在收件箱，也是一种安排。</p></section></aside></div>
         </>}
         {!taskView && !loading && !loadFailed && <>
-          {view === "reading" && <><ReadingPanel library={life.reading} onLibraryChange={saveReading} onCreateTask={createLinkedTask} onCreateThought={input => { setThoughtDraft(input); selectView("thoughts"); }}/><WeReadConnect onImport={next => saveReading(mergeReadingLibraries(life.reading, next))}/></>}
+          {view === "reading" && <><ReadingPanel library={life.reading} onLibraryChange={saveReading} onCreateTask={createLinkedTask} onCreateThought={input => { setThoughtDraft(input); selectView("thoughts"); }}/><WeReadSync onImport={next => saveReading(mergeReadingLibraries(life.reading, next))}/></>}
           {view === "thoughts" && <ThoughtsPanel thoughts={life.thoughts} library={life.reading} onThoughtsChange={saveThoughts} onCreateTask={createLinkedTask} initialDraft={thoughtDraft} onDraftConsumed={() => setThoughtDraft(null)}/>}
           {view === "life" && <LifeBoard board={life.board} reading={life.reading} thoughts={life.thoughts} today={today} onBoardChange={saveBoard} onOpenReading={() => selectView("reading")} onOpenThoughts={() => selectView("thoughts")}/>}
         </>}

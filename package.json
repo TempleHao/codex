@@ -9,6 +9,7 @@
     "build": "next build",
     "build:preview": "node scripts/build-preview.mjs",
     "serve:preview": "node scripts/serve-preview.mjs",
+    "sync:weread": "node scripts/run-weread-sync.mjs",
     "start": "next start --hostname 127.0.0.1",
     "typecheck": "next typegen && tsc --noEmit",
     "test": "vitest run",

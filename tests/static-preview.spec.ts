@@ -275,38 +275,3 @@ test("阅读与思考独立保存，可选事务工具和完整备份仍可使�
     await page.screenshot({ path: `/tmp/life-${view === "阅读" ? "reading" : view === "思考" ? "thoughts" : "overview"}-mobile.png`, fullPage: true });
   }
 });
-
-test("微信读书临时读取只发往官方接口，确认后才存资料，密钥不进入备份", async ({ page }) => {
-  await openWorkspace(page);
-  const calls: string[] = [];
-  const token = "test-only-fake-key-do-not-use";
-  await page.route("https://i.weread.qq.com/api/agent/gateway", async route => {
-    const request = route.request();
-    const headers = { "Access-Control-Allow-Origin": "*", "Access-Control-Allow-Headers": "*", "Access-Control-Allow-Methods": "POST, OPTIONS" };
-    if (request.method() === "OPTIONS") { await route.fulfill({ status: 204, headers }); return; }
-    expect(request.headers()["authorization"]).toBe(`Bearer ${token}`);
-    const body = request.postDataJSON();
-    expect(body.skill_version).toBe("1.0.4");
-    calls.push(body.api_name);
-    const payload = body.api_name === "/shelf/sync" ? { books: [{ bookId: "sync-test", title: "临时读取测试书", author: "", finishReading: 0 }], albums: [], mp: {} } : { totalReadTime: 3600, readDays: 1, dailyReadTimes: {} };
-    await route.fulfill({ status: 200, contentType: "application/json", headers, body: JSON.stringify(payload) });
-  });
-  await selectView(page, "阅读");
-  await page.getByText("从微信读书带来阅读记录", { exact: true }).click();
-  await page.getByLabel("微信读书 API Key", { exact: true }).fill(token);
-  await page.getByLabel("同时取回划线与想法", { exact: true }).uncheck();
-  await page.getByRole("button", { name: "读取并预览", exact: true }).click();
-  await expect(page.getByRole("heading", { name: "已取回，等你确认", exact: true })).toBeVisible();
-  expect(calls).toEqual(["/shelf/sync", "/readdata/detail", "/readdata/detail"]);
-  expect(await page.evaluate(key => localStorage.getItem(key), STORAGE_KEY)).toBeNull();
-  await page.getByRole("button", { name: "保存到阅读", exact: true }).click();
-  await expect(page.getByRole("status").filter({ hasText: "阅读记录已保存" })).toBeVisible();
-  const raw = await page.evaluate(key => localStorage.getItem(key), STORAGE_KEY);
-  expect(raw).not.toContain(token);
-  expect(JSON.parse(raw!).life.reading.books[0].title).toBe("临时读取测试书");
-  await page.reload();
-  await expect(page.getByRole("button", { name: "导出备份", exact: true })).toBeEnabled();
-  await selectView(page, "阅读");
-  await page.getByText("从微信读书带来阅读记录", { exact: true }).click();
-  await expect(page.getByLabel("微信读书 API Key", { exact: true })).toHaveValue("");
-});
