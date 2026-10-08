@@ -91,7 +91,7 @@ Actions 读取官方书架、累计统计及今年的每日统计，定时每天
 | `lastReadAt`、笔记 `createdAt` | 可选，实际存在的 `YYYY-MM-DD`，或带时区的 ISO 时间；相对日期不能直接导入。 |
 | 笔记 `id`、`bookId` | 必填；笔记编号唯一，`bookId` 必须对应本次文件中的书籍 `id`。 |
 | 笔记 `text`、`thought` | `text` 必填，可为空；原文与想法至少一项非空。不带原文的个人书评用空 `text` 和非空 `thought`。 |
-| `deepLink`、`cover` | 可选；链接仅接受绝对 HTTPS 或 `weread://`，封面仅接受 HTTPS。界面只提供微信读书官方域名或 `weread://` 的打开入口，不自行拼接链接。 |
+| `deepLink`、`cover` | 可选；链接仅接受绝对 HTTPS 或 `weread://`。封面使用 HTTPS；已确认的腾讯官方封面域名提供的旧 HTTP 地址会转换为 HTTPS。图片支持 `qq.com`、`qpic.cn` 及微信读书专用 `wfqqreader-1252317822.image.myqcloud.com`；加载失败时可重试。界面只提供微信读书官方域名或 `weread://` 的打开入口，不自行拼接链接。 |
 | `stats.totalSeconds` | 该统计范围的总阅读/收听秒数。 |
 | `stats.readingDays` | 可选，有效阅读天数；未知时省略，不能用 `0` 代替未知。 |
 | `stats.dailySeconds` | 每项包含唯一日期与秒数；缺少某天记录表示未知，不代表当天没读。 |

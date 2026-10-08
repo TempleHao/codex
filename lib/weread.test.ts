@@ -8,6 +8,12 @@ const mockClient = (value: unknown = { errcode: 0 }) => {
 };
 
 describe("official read-only gateway client (all requests mocked)", () => {
+  it("retains official cloud-storage covers and upgrades legacy HTTP before validation", () => {
+    const cover = "http://wfqqreader-1252317822.image.myqcloud.com/cover/example.jpg";
+    const books = normalizeShelf({ books: [{ bookId: "demo-cover", title: "封面示例", cover }] });
+    expect(books[0].cover).toBe(cover.replace("http:", "https:"));
+  });
+
   it("calls fetch with the global receiver required by browser-native fetch", async () => {
     const fetch = vi.fn<typeof globalThis.fetch>(function (this: unknown) {
       if (this !== globalThis) throw new TypeError("Illegal invocation");

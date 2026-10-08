@@ -13,12 +13,27 @@ export function isSafeReadingLink(value: string): boolean {
   } catch { return false; }
 }
 
+/** Cover hosts verified on WeRead; shared cloud storage is allowed only for its exact bucket. */
+export function trustedReadingCover(value?: string): string | null {
+  if (!value || /[\u0000-\u0020\u007f]/u.test(value)) return null;
+  try {
+    const url = new URL(value);
+    const officialHost = ["qq.com", "qpic.cn"].some(domain => url.hostname === domain || url.hostname.endsWith(`.${domain}`))
+      || url.hostname === "wfqqreader-1252317822.image.myqcloud.com";
+    if (!officialHost || url.username || url.password || url.port
+      || !["http:", "https:"].includes(url.protocol)) return null;
+    url.protocol = "https:";
+    return url.href;
+  } catch { return null; }
+}
+
 const idSchema = z.string().trim().min(1).max(200);
 const dateSchema = z.union([z.iso.date(), z.iso.datetime({ offset: true })]);
 const timestampSchema = z.iso.datetime({ offset: true });
 const secondsSchema = z.number().finite().nonnegative();
 const linkSchema = z.string().max(2_000).refine(isSafeReadingLink, "链接必须使用 https:// 或 weread://");
-const coverSchema = z.string().max(2_000).refine(value => isSafeReadingLink(value) && new URL(value).protocol === "https:", "封面必须使用 HTTPS 链接");
+const coverSchema = z.preprocess(value => typeof value === "string" ? trustedReadingCover(value) ?? value : value,
+  z.string().max(2_000).refine(value => isSafeReadingLink(value) && new URL(value).protocol === "https:", "封面必须使用 HTTPS 链接"));
 
 export const readingBookSchema = z.object({
   id: idSchema,

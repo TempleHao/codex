@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { emptyReadingLibrary, formatReadingSeconds, isSafeReadingLink, mergeReadingLibraries, parseReadingImport, readingLibrarySchema } from "./reading";
+import { emptyReadingLibrary, formatReadingSeconds, isSafeReadingLink, mergeReadingLibraries, parseReadingImport, readingLibrarySchema, trustedReadingCover } from "./reading";
 import type { ReadingBook, ReadingLibrary } from "./reading";
 
 const book: ReadingBook = { id: "demo-book", title: "示例书籍", author: "示例作者", kind: "ebook", status: "reading" };
@@ -52,6 +52,19 @@ describe("portable reading imports", () => {
 });
 
 describe("safe reading links and merge", () => {
+  it("supports WeRead's verified cloud bucket and upgrades official HTTP covers", () => {
+    const url = "https://wfqqreader-1252317822.image.myqcloud.com/cover/example.jpg";
+    expect(trustedReadingCover(url)).toBe(url);
+    expect(trustedReadingCover(url.replace("https:", "http:"))).toBe(url);
+    expect(parseReadingImport({ version: 1, source: "manual", items: [{ ...book, cover: url.replace("https:", "http:") }] }).books[0].cover).toBe(url);
+    expect(trustedReadingCover("https://cdn.weread.qq.com/cover/example.jpg")).toBe("https://cdn.weread.qq.com/cover/example.jpg");
+    expect(trustedReadingCover("https://img.qpic.cn/cover/example.jpg")).toBe("https://img.qpic.cn/cover/example.jpg");
+    for (const value of ["https://other-bucket.image.myqcloud.com/cover.jpg", "https://wfqqreader-1252317822.image.myqcloud.com.evil.test/cover.jpg", "https://cdn.weread.qq.com.evil.test/cover.jpg", "https://user:password@cdn.weread.qq.com/cover.jpg", "https://cdn.weread.qq.com:8443/cover.jpg", "http://untrusted.example/cover.jpg", "data:image/svg+xml,test"]) {
+      expect(trustedReadingCover(value)).toBeNull();
+    }
+    expect(() => parseReadingImport({ version: 1, source: "manual", items: [{ ...book, cover: "http://untrusted.example/cover.jpg" }] })).toThrow();
+  });
+
   it("only accepts absolute trusted schemes without embedded credentials", () => {
     expect(isSafeReadingLink("https://weread.qq.com/web/bookDetail/demo")).toBe(true);
     expect(isSafeReadingLink("weread://reader?bookId=demo")).toBe(true);

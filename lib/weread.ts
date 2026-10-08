@@ -1,5 +1,5 @@
 import { chinaToday } from "./dates";
-import { isSafeReadingLink, readingBookSchema, readingHighlightSchema, readingStatsSchema } from "./reading";
+import { isSafeReadingLink, readingBookSchema, readingHighlightSchema, readingStatsSchema, trustedReadingCover } from "./reading";
 import type { ReadingBook, ReadingHighlight, ReadingMode, ReadingStats } from "./reading";
 
 export const WEREAD_GATEWAY = "https://i.weread.qq.com/api/agent/gateway";
@@ -247,7 +247,10 @@ function unixDate(value: unknown): string | undefined {
   return Number.isFinite(date.getTime()) ? chinaToday(date) : undefined;
 }
 function deepLink(value: unknown): string | undefined { return typeof value === "string" && isSafeReadingLink(value) ? value : undefined; }
-function cover(value: unknown): string | undefined { return deepLink(value)?.startsWith("https://") ? value as string : undefined; }
+function cover(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  return trustedReadingCover(value) ?? (deepLink(value)?.startsWith("https://") ? value : undefined);
+}
 function array(value: unknown): unknown[] { if (value === undefined) return []; return Array.isArray(value) ? value : invalidResponse(); }
 function parseBook(value: unknown): ReadingBook {
   const result = readingBookSchema.safeParse(value);

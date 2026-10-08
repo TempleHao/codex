@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
-import { formatReadingSeconds, isSafeReadingLink, mergeReadingLibraries, parseReadingImport, type ReadingBook, type ReadingLibrary } from "@/lib/reading";
+import { formatReadingSeconds, isSafeReadingLink, mergeReadingLibraries, parseReadingImport, trustedReadingCover, type ReadingBook, type ReadingLibrary } from "@/lib/reading";
 import type { Area } from "@/lib/types";
 import "./reading.css";
 
@@ -37,12 +37,6 @@ function trustedReadingLink(value?: string): string | null {
   if (!value || !isSafeReadingLink(value)) return null;
   const url = new URL(value);
   return url.protocol === "weread:" || (url.protocol === "https:" && (url.hostname === "weread.qq.com" || url.hostname.endsWith(".weread.qq.com"))) ? value : null;
-}
-
-function trustedReadingCover(value?: string): string | null {
-  if (!value || !isSafeReadingLink(value)) return null;
-  const url = new URL(value);
-  return url.protocol === "https:" && ["qq.com", "qpic.cn"].some(domain => url.hostname === domain || url.hostname.endsWith(`.${domain}`)) ? value : null;
 }
 
 function displayReadingDate(value?: string | null): string {
@@ -233,7 +227,7 @@ export default function ReadingPanel({ library, onLibraryChange, onCreateTask, o
       <section className="reading-shelf" aria-labelledby="reading-shelf-title">
         <div className="reading-section-heading"><div><p className="section-kicker">MY BOOKSHELF</p><h2 id="reading-shelf-title">我的书架 <span className="count-pill">{filteredBooks.length}</span></h2></div><button className="text-button" type="button" onClick={exportReading} disabled={Boolean(busy)}><ReadingIcon name="download" size={14}/>导出阅读</button></div>
         <div className="reading-tools"><label className="reading-search" htmlFor="reading-search"><ReadingIcon name="search" size={17}/><input id="reading-search" type="search" value={search} onChange={event => setSearch(event.target.value)} placeholder="搜索书名或作者"/></label><div className="reading-select-filters"><label className="reading-sr-only" htmlFor="reading-status">按阅读状态筛选</label><select id="reading-status" value={statusFilter} onChange={event => setStatusFilter(event.target.value as typeof statusFilter)}><option value="all">全部状态</option>{Object.entries(STATUS_LABELS).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select><label className="reading-sr-only" htmlFor="reading-kind">按书籍类型筛选</label><select id="reading-kind" value={kindFilter} onChange={event => setKindFilter(event.target.value as typeof kindFilter)}><option value="all">全部类型</option>{Object.entries(KIND_LABELS).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></div></div>
-        <div className="reading-shelf-preferences"><label className="reading-cover-toggle"><input type="checkbox" checked={showCovers} onChange={event => setShowCovers(event.target.checked)}/>显示书籍封面</label><span>{blockedCovers ? "仅加载腾讯官方域名的封面，其他图片保留文字封面。" : showCovers ? "默认显示官方封面，可以随时关闭。" : "已关闭图片封面，勾选后恢复显示。"}</span></div>
+        <div className="reading-shelf-preferences"><label className="reading-cover-toggle"><input type="checkbox" checked={showCovers} onChange={event => { setShowCovers(event.target.checked); if (event.target.checked) setFailedCovers(new Set()); }}/>显示书籍封面</label><span>{blockedCovers ? "仅加载腾讯官方域名的封面，其他图片保留文字封面。" : showCovers ? "默认显示官方封面，可以随时关闭。" : "已关闭图片封面，勾选后恢复显示。"}</span>{showCovers && failedCovers.size > 0 && <button type="button" className="text-button" onClick={() => setFailedCovers(new Set())}>重试失败封面</button>}</div>
         {filteredBooks.length ? <div className="reading-books">{filteredBooks.map(book => <button type="button" key={book.id} className={`reading-book-card ${selectedBook?.id === book.id ? "selected" : ""}`} aria-pressed={selectedBook?.id === book.id} onClick={() => { setSelectedId(book.id); if (window.matchMedia("(max-width: 960px)").matches) detailRef.current?.scrollIntoView({ block: "start", behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" }); }}><div className={`reading-book-cover reading-cover-${book.kind} ${showCovers && trustedReadingCover(book.cover) && !failedCovers.has(`${book.id}|${book.cover}`) ? "has-image" : ""}`}>{showCovers && trustedReadingCover(book.cover) && !failedCovers.has(`${book.id}|${book.cover}`) ? <img src={trustedReadingCover(book.cover)!} alt={book.title} loading="lazy" referrerPolicy="no-referrer" onError={() => setFailedCovers(previous => new Set(previous).add(`${book.id}|${book.cover}`))}/> : <><span aria-hidden="true">{book.title.slice(0, 1)}</span><small aria-hidden="true">{KIND_LABELS[book.kind]}</small></>}</div><div className="reading-book-info"><strong>{book.title}</strong><span>{book.author || "作者未填写"}</span><div className="reading-book-meta"><span className={`reading-status-tag reading-status-${book.status}`}>{STATUS_LABELS[book.status]}</span>{typeof book.progress === "number" && <span>已读 {Math.round(book.progress)}%</span>}</div></div><span className="reading-card-arrow"><ReadingIcon name="arrow" size={17}/></span></button>)}</div> : <div className="reading-empty"><div className="reading-empty-icon"><ReadingIcon name="book" size={38}/></div><h3>{library.books.length ? "没有找到这本书" : "给一本书，留个位置"}</h3><p>{library.books.length ? "试试其他书名或作者，或调整筛选条件。" : "从手边正在读的那本开始，也可以导入你的书单、划线和想法。"}</p><button type="button" className="button secondary" onClick={library.books.length ? () => { setSearch(""); setStatusFilter("all"); setKindFilter("all"); } : openAdd}>{library.books.length ? "清除筛选" : "添加第一本书"}</button></div>}
         <div className="reading-shelf-footer"><span>最近同步：{displayReadingDate(library.syncedAt)}</span><span>{library.source === "weread" ? "微信读书资料" : "手动整理"}</span></div>
       </section>
