@@ -7,7 +7,7 @@ import { mergeReadingLibraries, readingLibrarySchema } from "../lib/reading";
 import type { ReadingLibrary } from "../lib/reading";
 import { readingSyncStatusSchema } from "../lib/reading-sync-status";
 import type { ReadingSyncStatus } from "../lib/reading-sync-status";
-import { WeReadClient, WeReadError, UpgradeRequired } from "../lib/weread";
+import { WeReadClient, WeReadError, UpgradeRequired, WEREAD_RESPONSE_SHAPE_REASONS } from "../lib/weread";
 import type { WeReadDiagnostics, WeReadOperation } from "../lib/weread";
 import { fetchWeReadLibrary, WEREAD_SYNC_REASONS, WeReadSyncError } from "../lib/weread-sync";
 import type { WeReadSyncClient, WeReadSyncProgress, WeReadSyncReason } from "../lib/weread-sync";
@@ -33,6 +33,7 @@ export interface SyncFailureDiagnostic {
   operation?: WeReadOperation;
   gatewayCode?: number;
   responsePaginationType?: WeReadDiagnostics["responsePaginationType"];
+  responseShapeReason?: WeReadDiagnostics["responseShapeReason"];
 }
 
 const STAGES = ["shelf", "stats", "notebooks", "notes", "complete"] as const;
@@ -184,6 +185,9 @@ function safeFailureDiagnostic(error: unknown, stage: WeReadSyncProgress["stage"
     const suppliedType = record.responsePaginationType;
     const paginationType = PAGINATION_TYPES.find(value => value === suppliedType);
     if (paginationType) diagnostic.responsePaginationType = paginationType;
+    const suppliedShapeReason = record.responseShapeReason;
+    const responseShapeReason = WEREAD_RESPONSE_SHAPE_REASONS.find(value => value === suppliedShapeReason);
+    if (responseShapeReason) diagnostic.responseShapeReason = responseShapeReason;
   }
   return diagnostic;
 }

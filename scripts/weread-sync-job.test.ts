@@ -276,13 +276,32 @@ describe("free GitHub WeRead encrypted synchronization job", () => {
   it("rejects arbitrary diagnostic fields and progress stages rather than reflecting them into logs", async () => {
     const deps = offlineDependencies();
     deps.client.getLastDiagnostics.mockReturnValue({ operation: `/private?key=${token}`, gatewayCode: Infinity,
-      responsePaginationType: library.books[0].title, bookId: library.books[0].id } as unknown as WeReadDiagnostics);
+      responsePaginationType: library.books[0].title, responseShapeReason: token, bookId: library.books[0].id } as unknown as WeReadDiagnostics);
     deps.fetchLibrary.mockImplementation(async (_client, options) => {
       options?.onProgress?.({ stage: token, message: passphrase } as never);
       throw new WeReadSyncError("InvalidData", passphrase, undefined, token as WeReadSyncReason);
     });
     await runWeReadSyncJob(environment(), deps);
     expect(deps.onDiagnostic).toHaveBeenCalledExactlyOnceWith({ stage: "shelf" });
+  });
+
+  it("captures a known response-shape getter once and emits its fixed constant without private content", async () => {
+    const deps = offlineDependencies();
+    let reads = 0;
+    deps.client.getLastDiagnostics.mockReturnValue({ operation: "/review/list/mine", responsePaginationType: "number",
+      get responseShapeReason() { return ++reads === 1 ? "thought_text_empty" : `${token} ${library.highlights[0].text}`; },
+    } as unknown as WeReadDiagnostics);
+    deps.fetchLibrary.mockImplementation(async (_client, options) => {
+      options?.onProgress?.({ stage: "notes", message: passphrase });
+      throw new WeReadError("InvalidResponse", library.highlights[0].text);
+    });
+    expect(await runWeReadSyncJob(environment(), deps)).toMatchObject({ state: "failed", failureCode: "invalid_data" });
+    expect(reads).toBe(1);
+    expect(deps.onDiagnostic).toHaveBeenCalledExactlyOnceWith({ stage: "notes", operation: "/review/list/mine",
+      responsePaginationType: "number", responseShapeReason: "thought_text_empty" });
+    const publicText = JSON.stringify(deps.onDiagnostic.mock.calls);
+    for (const privateText of [token, passphrase, library.highlights[0].text]) expect(publicText).not.toContain(privateText);
+    expect(await readStatus()).not.toHaveProperty("responseShapeReason");
   });
 
   it("reads dynamic diagnostic getters once and publishes only their validated primitive values", async () => {
@@ -357,6 +376,32 @@ describe("free GitHub WeRead encrypted synchronization job", () => {
     for (const privateText of [token, passphrase, library.books[0].id, library.books[0].title, library.highlights[0].text]) expect(publicText).not.toContain(privateText);
     expect(await readStatus()).toMatchObject({ state: "failed", failureCode: "invalid_data" });
     expect(await readStatus()).not.toHaveProperty("reason");
+  });
+
+  it("includes a safe adapter response-shape reason in CI annotations without publishing it in status", async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>().mockImplementation(async (_url, init) => {
+      const body = JSON.parse(String(init?.body));
+      if (body.api_name === "/shelf/sync") return new Response(JSON.stringify({ books: [{ bookId: library.books[0].id, title: library.books[0].title, author: "作者" }], albums: [] }));
+      if (body.api_name === "/readdata/detail") return new Response(JSON.stringify({ totalReadTime: 600, baseTime: 0 }));
+      if (body.api_name === "/user/notebooks") return new Response(JSON.stringify({ totalBookCount: 1, hasMore: 0,
+        books: [{ bookId: library.books[0].id, book: { title: library.books[0].title, author: "作者" }, noteCount: 0, reviewCount: 1 }] }));
+      if (body.api_name === "/review/list/mine") return new Response(JSON.stringify({ reviews: [{ review: { reviewId: "offline-review", content: "", abstract: "" } }], totalCount: 1, hasMore: 0,
+        errmsg: `${token} ${passphrase} ${library.highlights[0].text}` }));
+      throw new Error("Unexpected offline CI shape test request");
+    });
+    vi.stubGlobal("fetch", fetch);
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    expect(await runWeReadSyncCli(environment({ GITHUB_ACTIONS: "true", WEREAD_SYNC_INCLUDE_NOTES: "true" }))).toBe(true);
+    const prefix = "::warning title=WeRead sync diagnostic::";
+    const annotations = log.mock.calls.map(([value]) => String(value)).filter(value => value.startsWith(prefix));
+    expect(annotations).toHaveLength(1);
+    expect(JSON.parse(annotations[0].slice(prefix.length))).toEqual({ stage: "notes", operation: "/review/list/mine",
+      responsePaginationType: "number", responseShapeReason: "thought_text_empty" });
+    const publicText = JSON.stringify([log.mock.calls, error.mock.calls]);
+    for (const privateText of [token, passphrase, library.books[0].title, library.highlights[0].text]) expect(publicText).not.toContain(privateText);
+    expect(await readStatus()).toMatchObject({ state: "failed", failureCode: "invalid_data" });
+    expect(await readStatus()).not.toHaveProperty("responseShapeReason");
   });
 
   it("rejects oversized, corrupted or plaintext previous files rather than publishing them", async () => {

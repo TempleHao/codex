@@ -7,10 +7,19 @@ export const WEREAD_SKILL_VERSION = "1.0.4";
 
 type ErrorCode = "InvalidInput" | "NetworkError" | "Timeout" | "HttpError" | "BusinessError" | "InvalidResponse" | "UpgradeRequired";
 export type WeReadOperation = "/shelf/sync" | "/readdata/detail" | "/user/notebooks" | "/book/bookmarklist" | "/review/list/mine" | "/store/search" | "/book/getprogress";
+export const WEREAD_RESPONSE_SHAPE_REASONS = [
+  "response_json_invalid", "response_not_object", "data_not_object",
+  "notebook_books_not_array", "notebook_item_invalid", "book_schema_invalid",
+  "thought_reviews_not_array", "thought_item_invalid", "thought_review_id_invalid",
+  "thought_text_empty", "thought_text_empty_with_rating", "thought_text_too_long", "thought_chapter_too_long", "thought_schema_invalid",
+  "pagination_value_invalid", "pagination_cursor_missing",
+] as const;
+export type WeReadResponseShapeReason = (typeof WEREAD_RESPONSE_SHAPE_REASONS)[number];
 export interface WeReadDiagnostics {
   operation: WeReadOperation;
   gatewayCode?: number;
   responsePaginationType?: "boolean" | "number" | "missing" | "other";
+  responseShapeReason?: WeReadResponseShapeReason;
 }
 const OPERATIONS: readonly WeReadOperation[] = ["/shelf/sync", "/readdata/detail", "/user/notebooks", "/book/bookmarklist", "/review/list/mine", "/store/search", "/book/getprogress"];
 
@@ -28,12 +37,15 @@ export class WeReadError extends Error {
         const suppliedOperation = diagnostics.operation;
         const code = gatewayCode(diagnostics.gatewayCode);
         const suppliedPaginationType = diagnostics.responsePaginationType;
+        const suppliedShapeReason = diagnostics.responseShapeReason;
         const operation = OPERATIONS.find(value => value === suppliedOperation);
         const responsePaginationType = (["boolean", "number", "missing", "other"] as const)
           .find(value => value === suppliedPaginationType);
+        const responseShapeReason = WEREAD_RESPONSE_SHAPE_REASONS.find(value => value === suppliedShapeReason);
         if (operation) this.diagnostics = Object.freeze({ operation,
           ...(code === undefined ? {} : { gatewayCode: code }),
-          ...(responsePaginationType === undefined ? {} : { responsePaginationType }) });
+          ...(responsePaginationType === undefined ? {} : { responsePaginationType }),
+          ...(responseShapeReason === undefined ? {} : { responseShapeReason }) });
       }
     } catch { /* Unreadable metadata is omitted; the fixed error remains usable. */ }
   }
@@ -64,10 +76,17 @@ function responseDiagnostics(operation: WeReadOperation, response: unknown): WeR
       : typeof payload.hasMore === "number" ? "number" as const : "other" as const } : {}) };
 }
 function diagnosticError(error: WeReadError, operation: WeReadOperation, response: unknown): WeReadError {
-  const diagnostics = responseDiagnostics(operation, response);
+  const reason = invalidResponseReasons.get(error) ?? error.diagnostics?.responseShapeReason;
+  const diagnostics = { ...responseDiagnostics(operation, response), ...(reason ? { responseShapeReason: reason } : {}) };
   return error instanceof UpgradeRequired ? new UpgradeRequired(diagnostics) : new WeReadError(error.code, error.message, diagnostics);
 }
-function invalidResponse(): never { throw new WeReadError("InvalidResponse", "微信读书返回的数据格式暂不支持，请保留已有阅读记录。"); }
+// Reasons are static enums. No payload or personal field is retained here.
+const invalidResponseReasons = new WeakMap<WeReadError, WeReadResponseShapeReason>();
+function invalidResponse(reason?: WeReadResponseShapeReason): never {
+  const error = new WeReadError("InvalidResponse", "微信读书返回的数据格式暂不支持，请保留已有阅读记录。");
+  if (reason) invalidResponseReasons.set(error, reason);
+  throw error;
+}
 function inspectGateway(value: Record<string, unknown>): void {
   if (Object.hasOwn(value, "upgrade_info")) throw new UpgradeRequired();
   if (Object.hasOwn(value, "errcode") && value.errcode !== 0) {
@@ -78,11 +97,11 @@ function inspectGateway(value: Record<string, unknown>): void {
 /** Limited compatibility: a direct documented payload or one object-valued data envelope. */
 export function unwrapWeReadResponse(value: unknown): Record<string, unknown> {
   const outer = record(value);
-  if (!outer) return invalidResponse();
+  if (!outer) return invalidResponse("response_not_object");
   inspectGateway(outer);
   if (Object.hasOwn(outer, "data")) {
     const inner = record(outer.data);
-    if (!inner) return invalidResponse();
+    if (!inner) return invalidResponse("data_not_object");
     inspectGateway(inner);
     return inner;
   }
@@ -151,7 +170,7 @@ export class WeReadClient {
       if (timedOut) throw new WeReadError("Timeout", "微信读书请求超时，请稍后重试。");
       // Inspect every JSON response for upgrade_info, including non-2xx responses.
       try { body = await response.json(); }
-      catch { if (response.ok) return invalidResponse(); }
+      catch { if (response.ok) return invalidResponse("response_json_invalid"); }
       this.#lastDiagnostics = responseDiagnostics(apiName, body);
       const outer = record(body);
       if (outer) {
@@ -232,7 +251,7 @@ function cover(value: unknown): string | undefined { return deepLink(value)?.sta
 function array(value: unknown): unknown[] { if (value === undefined) return []; return Array.isArray(value) ? value : invalidResponse(); }
 function parseBook(value: unknown): ReadingBook {
   const result = readingBookSchema.safeParse(value);
-  return result.success ? result.data : invalidResponse();
+  return result.success ? result.data : invalidResponse("book_schema_invalid");
 }
 function nonempty(value: unknown): boolean {
   const item = record(value);
@@ -330,17 +349,17 @@ function paginationContinues(payload: Record<string, unknown>): boolean {
   if (!Object.hasOwn(payload, "hasMore")) return false;
   if (payload.hasMore === true || payload.hasMore === 1) return true;
   if (payload.hasMore === false || payload.hasMore === 0) return false;
-  return invalidResponse();
+  return invalidResponse("pagination_value_invalid");
 }
 
 export function normalizeNotebooks(response: unknown): NotebookPage {
   try {
     const payload = unwrapWeReadResponse(response);
-    if (!Array.isArray(payload.books)) return invalidResponse();
+    if (!Array.isArray(payload.books)) return invalidResponse("notebook_books_not_array");
     const books: ReadingNotebook[] = payload.books.map(value => {
       const item = record(value);
       const book = record(item?.book);
-      if (!item || !book) return invalidResponse();
+      if (!item || !book) return invalidResponse("notebook_item_invalid");
       const highlightCount = count(item.noteCount);
       const thoughtCount = count(item.reviewCount);
       const bookmarkCount = count(item.bookmarkCount);
@@ -354,7 +373,7 @@ export function normalizeNotebooks(response: unknown): NotebookPage {
     });
     const hasMore = paginationContinues(payload);
     const nextLastSort = hasMore ? books.at(-1)?.sort : undefined;
-    if (hasMore && nextLastSort === undefined) return invalidResponse();
+    if (hasMore && nextLastSort === undefined) return invalidResponse("pagination_cursor_missing");
     return { books, hasMore, nextLastSort, totalBookCount: count(payload.totalBookCount), totalNoteCount: count(payload.totalNoteCount) };
   } catch (error) {
     if (error instanceof WeReadError) throw diagnosticError(error, "/user/notebooks", response);
@@ -364,9 +383,9 @@ export function normalizeNotebooks(response: unknown): NotebookPage {
 
 export const normalizeNotebook = normalizeNotebooks;
 
-function parseHighlight(value: unknown): ReadingHighlight {
+function parseHighlight(value: unknown, reason?: WeReadResponseShapeReason): ReadingHighlight {
   const result = readingHighlightSchema.safeParse(value);
-  return result.success ? result.data : invalidResponse();
+  return result.success ? result.data : invalidResponse(reason);
 }
 export function normalizeHighlights(response: unknown, bookId: string): ReadingHighlight[] {
   requireText(bookId);
@@ -389,17 +408,27 @@ export function normalizeThoughts(response: unknown, bookId: string): ThoughtsPa
   requireText(bookId);
   try {
     const payload = unwrapWeReadResponse(response);
-    if (!Array.isArray(payload.reviews)) return invalidResponse();
+    if (!Array.isArray(payload.reviews)) return invalidResponse("thought_reviews_not_array");
     const highlights = payload.reviews.map(value => {
       const wrapper = record(value);
       const review = record(wrapper?.review);
-      if (!review || !id(review.reviewId)) return invalidResponse();
-      return parseHighlight({ id: `review:${id(review.reviewId)}`, bookId, text: text(review.abstract) ?? "", thought: text(review.content),
-        chapter: text(review.chapterName), createdAt: unixDate(review.createTime), deepLink: deepLink(review.deepLink ?? wrapper?.deepLink) });
+      if (!review) return invalidResponse("thought_item_invalid");
+      const reviewId = id(review.reviewId);
+      if (!reviewId) return invalidResponse("thought_review_id_invalid");
+      const originalText = text(review.abstract) ?? "";
+      const thought = text(review.content);
+      const chapter = text(review.chapterName);
+      if (originalText.length > 20_000 || (thought?.length ?? 0) > 20_000) return invalidResponse("thought_text_too_long");
+      if ((chapter?.length ?? 0) > 1_000) return invalidResponse("thought_chapter_too_long");
+      if (!(originalText.trim() || thought?.trim())) return invalidResponse(
+        typeof review.star === "number" && Number.isInteger(review.star) && review.star >= 0 && review.star <= 5
+          ? "thought_text_empty_with_rating" : "thought_text_empty");
+      return parseHighlight({ id: `review:${reviewId}`, bookId, text: originalText, thought,
+        chapter, createdAt: unixDate(review.createTime), deepLink: deepLink(review.deepLink ?? wrapper?.deepLink) }, "thought_schema_invalid");
     });
     const hasMore = paginationContinues(payload);
     const nextSynckey = hasMore ? count(payload.synckey) : undefined;
-    if (hasMore && nextSynckey === undefined) return invalidResponse();
+    if (hasMore && nextSynckey === undefined) return invalidResponse("pagination_cursor_missing");
     return { highlights, hasMore, nextSynckey, totalCount: count(payload.totalCount) };
   } catch (error) {
     if (error instanceof WeReadError) throw diagnosticError(error, "/review/list/mine", response);

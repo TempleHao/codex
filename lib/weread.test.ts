@@ -179,21 +179,36 @@ describe("official read-only gateway client (all requests mocked)", () => {
   });
 
   it("reads diagnostics accessors once and omits metadata if an accessor throws", () => {
-    const reads = { operation: 0, gatewayCode: 0, responsePaginationType: 0 };
+    const reads = { operation: 0, gatewayCode: 0, responsePaginationType: 0, responseShapeReason: 0 };
     const changing = {
       get operation() { return ++reads.operation === 1 ? "/user/notebooks" : "private-operation"; },
       get gatewayCode() { return ++reads.gatewayCode === 1 ? -1 : "private-code"; },
       get responsePaginationType() { return ++reads.responsePaginationType === 1 ? "boolean" : "private-pagination"; },
+      get responseShapeReason() { return ++reads.responseShapeReason === 1 ? "thought_item_invalid" : "private-shape-reason"; },
     };
     const error = new WeReadError("InvalidResponse", "fixed", changing as never);
-    expect(reads).toEqual({ operation: 1, gatewayCode: 1, responsePaginationType: 1 });
-    expect(error.diagnostics).toEqual({ operation: "/user/notebooks", gatewayCode: -1, responsePaginationType: "boolean" });
+    expect(reads).toEqual({ operation: 1, gatewayCode: 1, responsePaginationType: 1, responseShapeReason: 1 });
+    expect(error.diagnostics).toEqual({ operation: "/user/notebooks", gatewayCode: -1, responsePaginationType: "boolean", responseShapeReason: "thought_item_invalid" });
     expect(JSON.stringify(error)).not.toContain("private-");
     const throwing = { get operation() { throw new Error("private-accessor-message"); } };
     const fixed = new WeReadError("InvalidResponse", "fixed", throwing as never);
     expect(fixed.diagnostics).toBeUndefined();
     expect(fixed.message).toBe("fixed");
     expect(JSON.stringify(fixed)).not.toContain("private-");
+    expect(new WeReadError("InvalidResponse", "fixed", { operation: "/review/list/mine", responseShapeReason: "private-reason" } as never).diagnostics)
+      .toEqual({ operation: "/review/list/mine" });
+  });
+
+  it("classifies invalid JSON and envelope shapes without exposing response content", async () => {
+    const invalidFetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(new Response("private-invalid-json"));
+    await expect(new WeReadClient({ token: "private-key", fetch: invalidFetch }).thoughts("private-book"))
+      .rejects.toMatchObject({ code: "InvalidResponse", diagnostics: { operation: "/review/list/mine", responseShapeReason: "response_json_invalid" } });
+    for (const [value, responseShapeReason] of [[null, "response_not_object"], [{ data: "private-value" }, "data_not_object"]] as const) {
+      const { client } = mockClient(value);
+      const error = await client.thoughts("private-book").catch(error => error);
+      expect(error).toMatchObject({ code: "InvalidResponse", diagnostics: { operation: "/review/list/mine", responseShapeReason } });
+      expect(JSON.stringify(error)).not.toContain("private-");
+    }
   });
 
   it("preserves upgrade halting while adding only fixed response metadata", async () => {
@@ -336,5 +351,48 @@ describe("documented WeRead normalizers", () => {
     }
     expect(() => normalizeThoughts({ data: { errcode: -1, hasMore: true, errmsg: "private-message" } }, "private-id"))
       .toThrowError(expect.objectContaining({ code: "BusinessError", diagnostics: { operation: "/review/list/mine", gatewayCode: -1, responsePaginationType: "boolean" } }));
+  });
+
+  it("distinguishes thought response failures using only fixed shape reasons", () => {
+    const sample = { reviewId: "private-review-id", content: "private-thought" };
+    const cases = [
+      [{ hasMore: 0 }, "thought_reviews_not_array"],
+      [{ reviews: [null], hasMore: 0 }, "thought_item_invalid"],
+      [{ reviews: [{ review: null }], hasMore: 0 }, "thought_item_invalid"],
+      [{ reviews: [{ review: { content: "private-thought" } }], hasMore: 0 }, "thought_review_id_invalid"],
+      [{ reviews: [{ review: { reviewId: "private-review-id", content: " \n " } }], hasMore: 0 }, "thought_text_empty"],
+      [{ reviews: [{ review: { reviewId: "private-review-id", star: 3 } }], hasMore: 0 }, "thought_text_empty_with_rating"],
+      [{ reviews: [{ review: { reviewId: "private-review-id", star: -1 } }], hasMore: 0 }, "thought_text_empty"],
+      [{ reviews: [{ review: { ...sample, content: "private".repeat(3_000) } }], hasMore: 0 }, "thought_text_too_long"],
+      [{ reviews: [{ review: { ...sample, abstract: "private".repeat(3_000) } }], hasMore: 0 }, "thought_text_too_long"],
+      [{ reviews: [{ review: { ...sample, chapterName: "private".repeat(200) } }], hasMore: 0 }, "thought_chapter_too_long"],
+      [{ reviews: [{ review: { ...sample, reviewId: "private".repeat(30) } }], hasMore: 0 }, "thought_schema_invalid"],
+      [{ reviews: [{ review: sample }], hasMore: 2 }, "pagination_value_invalid"],
+      [{ reviews: [{ review: sample }], hasMore: 1 }, "pagination_cursor_missing"],
+    ] as const;
+    for (const [data, responseShapeReason] of cases) {
+      for (const value of [data, { data }]) {
+        let failure: unknown;
+        try { normalizeThoughts(value, "private-book-id"); } catch (error) { failure = error; }
+        expect(failure).toMatchObject({ code: "InvalidResponse", diagnostics: { operation: "/review/list/mine", responseShapeReason } });
+        expect((failure as WeReadError).message).toBe("微信读书返回的数据格式暂不支持，请保留已有阅读记录。");
+        expect(JSON.stringify(failure)).not.toContain("private");
+        expect(JSON.stringify(failure)).not.toContain("star");
+      }
+    }
+  });
+
+  it("adds fixed notebook shape and cursor reasons to malformed pages", () => {
+    const cases = [
+      [{ books: null, hasMore: 0 }, "notebook_books_not_array"],
+      [{ books: [null], hasMore: 0 }, "notebook_item_invalid"],
+      [{ books: [{ bookId: "private-book", book: {} }], hasMore: 0 }, "book_schema_invalid"],
+      [{ books: [], hasMore: true }, "pagination_cursor_missing"],
+    ] as const;
+    for (const [value, responseShapeReason] of cases) {
+      expect(() => normalizeNotebooks(value)).toThrowError(expect.objectContaining({ code: "InvalidResponse", diagnostics: expect.objectContaining({
+        operation: "/user/notebooks", responseShapeReason,
+      }) }));
+    }
   });
 });
