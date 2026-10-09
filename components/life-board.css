@@ -1200,3 +1200,81 @@
     transition: none;
   }
 }
+
+/* Shared journal identity. Data projections and editing flows stay in their components. */
+.life-board, .life-board-dialog {
+  --life-ink: var(--ink);
+  --life-muted: var(--muted);
+  --life-green: var(--green);
+  --life-line: var(--line);
+  --life-surface: var(--surface);
+  --life-soft: var(--green-light);
+}
+.life-board-intro { margin-bottom: 28px; padding: 0 0 26px; border-bottom: 1px solid var(--line); }
+.life-board-intro > div:first-child > p:first-child { color: var(--peach); font-size: 11px; letter-spacing: 2.2px; line-height: 1.8; margin-bottom: 11px; }
+.life-board-intro h1 { font-family: var(--font-serif); font-size: clamp(32px, 3.3vw, 42px); font-weight: 500; line-height: 1.45; letter-spacing: 1px; }
+.life-board-intro > div > p:last-child { color: var(--muted); font-size: 14px; }
+.life-board :is(h2, h3), .life-board-dialog h2 { font-family: var(--font-serif); font-weight: 500; }
+.life-board h2 { font-size: 24px; }
+.life-board-overview { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; margin-bottom: 30px; }
+.life-board-overview > span { flex-direction: column; align-items: flex-start; gap: 7px; padding: 18px 22px; border-radius: 13px; background: var(--surface); color: var(--muted); font-size: 13px; box-shadow: var(--shadow-card); }
+.life-board-overview strong { font-family: var(--font-serif); font-size: 30px; font-weight: 500; color: var(--green); line-height: 1.1; }
+.life-thread-section, .life-timeline-section { border-radius: var(--radius-card); border-color: var(--line); background: var(--surface); box-shadow: var(--shadow-card); }
+.life-board-section-heading { padding: 25px 25px 21px; }
+.life-board .section-kicker { font-size: 12px; color: var(--muted); letter-spacing: .5px; }
+.life-board-domains { gap: 7px; padding-bottom: 18px; }
+.life-board-domains button { border-radius: 20px; background: var(--paper); border-color: var(--line); min-height: 36px; padding: 7px 12px; font-size: 12px; }
+.life-board-domains button[aria-pressed="true"] { background: var(--green); border-color: var(--green); color: var(--surface); }
+.life-domain-count { font-variant-numeric: tabular-nums; }
+.life-board-filters :is(input, select), .life-timeline-tools :is(input, select), .life-board-field :is(input, select, textarea) { background: var(--paper); border-color: var(--line); border-radius: 10px; color: var(--ink); }
+.life-thread-card { background: var(--paper); border-color: var(--line); border-left: 3px solid var(--green); border-radius: 12px; padding: 22px; }
+.life-thread-state-resting { border-left-color: var(--peach); }
+.life-thread-state-archived { border-left-color: #a5afa2; }
+.life-thread-card-heading h3 { font-size: 21px; line-height: 1.6; color: var(--ink); }
+.life-thread-description { font-size: 14px; line-height: 1.95; color: var(--muted); }
+.life-thread-actions button, .life-timeline-actions button { color: var(--green); font-size: 12px; min-height: 36px; }
+.life-board .life-board-danger { color: var(--red); }
+.life-board-aside-card { background: var(--peach-light); border: 1px solid #e4d9c9; border-radius: var(--radius-card); padding: 26px; }
+.life-board-aside-card :is(h2, h3) { color: #594e3f; font-size: 25px; line-height: 1.6; }
+.life-board-aside-card :is(p, li) { color: #6e6251; font-size: 13px; line-height: 1.95; }
+.life-board-entry-card { background: var(--surface); border-color: var(--line); border-radius: 14px; padding: 20px; color: var(--ink); gap: 14px; box-shadow: var(--shadow-card); }
+.life-board-entry-card > svg:first-child { padding: 9px; box-sizing: content-box; border-radius: 12px; background: var(--green-light); color: var(--green); }
+.life-board-entry-card:hover:not(:disabled) { background: var(--green-light); border-color: #bacab9; }
+.life-board-entry-card :is(h2, h3, strong) { font-family: var(--font-serif); font-size: 19px; font-weight: 500; }
+.life-board-entry-card :is(p, small) { color: var(--muted); font-size: 12px; line-height: 1.8; }
+.life-board-empty { padding: 42px 28px; color: var(--muted); }
+.life-board-empty h3 { font-size: 25px; color: var(--green); line-height: 1.7; }
+.life-board-empty > :is(svg, .life-board-empty-art) { color: var(--peach); }
+.life-board-empty p { color: var(--muted); font-size: 14px; line-height: 1.95; }
+.life-timeline-date { color: var(--muted); font-size: 13px; }
+.life-timeline-content h3 { font-size: 22px; }
+.life-timeline-content { border-color: var(--line); }
+.life-timeline-content :is(p, blockquote, pre) { color: var(--ink); font-size: 14px; line-height: 1.95; }
+.life-timeline-review .life-timeline-content { background: var(--paper); border-color: var(--line); border-radius: 12px; }
+.life-board-dialog { border-radius: 22px; box-shadow: 0 24px 80px #1b302b30; }
+.life-board-dialog-header h2 { font-size: 27px; }
+.life-board .button, .life-board-dialog .button { border-radius: 10px; min-height: 44px; }
+.life-board .button.secondary, .life-board-dialog .button.secondary { color: var(--green); background: var(--surface); border-color: #d5ddd0; }
+.life-board :is(button, input, select, textarea, summary):focus-visible, .life-board-dialog :is(button, input, select, textarea):focus-visible { outline-color: var(--peach); }
+@media (max-width: 640px) {
+  .life-board-intro { margin-bottom: 20px; padding-bottom: 22px; gap: 16px; }
+  .life-board-intro h1 { font-size: 34px; }
+  .life-board-intro > div > p:last-child { font-size: 13px; }
+  .life-board-intro-actions { gap: 8px; }
+  .life-board-overview { gap: 8px; margin-bottom: 22px; }
+  .life-board-overview > span { padding: 15px 11px; gap: 8px; font-size: 12px; line-height: 1.7; }
+  .life-board-overview strong { font-size: 28px; }
+  .life-board-section-heading { padding: 22px 18px 18px; gap: 12px; }
+  .life-board h2 { font-size: 23px; }
+  .life-board-domains { flex-wrap: nowrap; overflow-x: auto; padding: 0 18px 14px; gap: 7px; scrollbar-width: thin; scrollbar-color: #bcc9b7 transparent; }
+  .life-board-domains button { flex: 0 0 auto; min-height: 38px; }
+  .life-board-filters :is(input, select), .life-timeline-tools :is(input, select), .life-board-field :is(input, select, textarea) { font-size: 16px; min-height: 44px; }
+  .life-thread-card { padding: 20px; }
+  .life-thread-card-heading h3 { font-size: 21px; }
+  .life-board-empty { padding: 34px 21px; }
+  .life-board-empty h3 { font-size: 23px; }
+  .life-board-empty p { font-size: 13px; }
+  .life-board-aside-card { padding: 24px; }
+  .life-board-entry-card { padding: 19px; }
+  .life-board-dialog-header h2 { font-size: 25px; }
+}

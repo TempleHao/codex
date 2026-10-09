@@ -22,11 +22,12 @@ import { MAX_BACKUP_BYTES } from "@/lib/backup";
 
 type TaskView = "today" | "inbox" | "all" | "done";
 type View = TaskView | "reading" | "media" | "thoughts" | "life";
-type IconName = "sun" | "inbox" | "list" | "check" | "plus" | "arrow" | "close" | "search" | "download" | "upload" | "edit" | "trash" | "leaf" | "spark" | "file" | "chevron" | "book";
+type IconName = "sun" | "inbox" | "list" | "check" | "plus" | "arrow" | "close" | "search" | "download" | "upload" | "edit" | "trash" | "leaf" | "spark" | "file" | "chevron" | "book" | "film";
 
 function Icon({ name, size = 20, className = "" }: { name: IconName; size?: number; className?: string }) {
   const paths: Record<IconName, React.ReactNode> = {
     sun: <><circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M2 12h2m16 0h2M5 5l1.4 1.4m11.2 11.2L19 19M5 19l1.4-1.4M17.6 6.4 19 5"/></>,
+    film: <><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M7 4v16M17 4v16M3 9h4m10 0h4M3 15h4m10 0h4"/></>,
     inbox: <><path d="m4 5-2 9v5h20v-5l-2-9H4Z"/><path d="M2 14h6l2 3h4l2-3h6"/></>,
     list: <><path d="M9 6h12M9 12h12M9 18h12"/><circle cx="4" cy="6" r=".6"/><circle cx="4" cy="12" r=".6"/><circle cx="4" cy="18" r=".6"/></>,
     check: <path d="m5 12 4 4L19 6"/>, plus: <path d="M12 5v14M5 12h14"/>, arrow: <path d="M4 12h16m-6-6 6 6-6 6"/>,
@@ -44,7 +45,7 @@ function Icon({ name, size = 20, className = "" }: { name: IconName; size?: numb
 const EMPTY: WorkspaceData = { tasks: [], sources: [] };
 const NAV: { id: View; title: string; icon: IconName }[] = [
   { id: "life", title: "人生看板", icon: "leaf" },
-  { id: "reading", title: "阅读", icon: "book" }, { id: "media", title: "影音", icon: "sun" }, { id: "thoughts", title: "思考", icon: "file" },
+  { id: "reading", title: "阅读", icon: "book" }, { id: "media", title: "影音", icon: "film" }, { id: "thoughts", title: "思考", icon: "file" },
   { id: "all", title: "事务", icon: "list" },
 ];
 const TASK_NAV: { id: TaskView; title: string }[] = [
@@ -301,7 +302,7 @@ export default function Home() {
 
   return <div className="workspace">
     <aside className="sidebar">
-      <a href={`${APP_BASE_PATH}/`} className="brand" aria-label="有序首页"><span className="brand-mark"><Icon name="list" size={24}/></span><span>有序<small>人生工作台</small></span></a>
+      <a href={`${APP_BASE_PATH}/`} className="brand" aria-label="有序首页"><span className="brand-mark"><Icon name="leaf" size={24}/></span><span>有序<small>人生工作台</small></span></a>
       <div className="sidebar-heading">我的空间</div>
       <nav className="navigation" aria-label="主导航">{NAV.map(item => <button key={item.id} className={`nav-item ${(view === item.id || (item.id === "all" && taskView)) ? "active" : ""}`} aria-current={view === item.id || (item.id === "all" && taskView) ? "page" : undefined} disabled={lifeSaving || restoring || clearing} onClick={() => selectView(item.id)}><Icon name={item.icon}/><span>{item.title}</span><small>{loading ? "·" : counts[item.id]}</small></button>)}</nav>
       <div className="sidebar-note"><span className="tiny-star">✳</span><p>生活的线头，慢慢理清。<br/>看见经历，也看见自己。</p><span className="note-line"/></div>
@@ -312,7 +313,6 @@ export default function Home() {
       <header className="topbar"><span className="breadcrumb">我的空间 <span>/</span> <strong>{currentName}</strong></span><span className="date-label"><Icon name="sun" size={16}/>{dateLabel}</span></header>
       <div className="main-content">
         {taskView && <section className="page-intro"><div><p className="eyebrow">A LITTLE ORDER, A LITTLE MORE SPACE</p><h1>{active.title.split("，")[0]}，<span className="intro-title-tail">{active.title.split("，")[1]}</span></h1><p className="intro-description">{active.description}</p></div><button className="button primary collect-button" onClick={openImport} disabled={loading || loadFailed}><Icon name="plus" size={18}/>收集待办</button></section>}
-        {IS_STATIC_PREVIEW && <aside className="preview-notice" aria-label="试用版数据说明"><Icon name="file" size={17}/><div><strong>个人记录与备份</strong><p>数据仅保存在当前浏览器，手机与电脑独立，记得导出备份。</p><p>清除浏览器数据会删除记录；无需连接外部 AI。</p></div></aside>}
 
         <div className="feedback" aria-live="polite" role="status">{status && <p className="success-message"><Icon name="check" size={16}/>{status}<button className="dismiss" aria-label="关闭提示" onClick={() => setStatus("")}><Icon name="close" size={15}/></button></p>}</div>
         {error && <div className="error-message" role="alert"><span>{error}</span>{loadFailed && <button onClick={() => void load()}>重新加载</button>}<button className="dismiss" onClick={() => setError("")} aria-label="关闭错误提示"><Icon name="close" size={15}/></button></div>}
@@ -341,6 +341,7 @@ export default function Home() {
           {view === "life" && <LifeBoard board={life.board} reading={life.reading} media={life.media} thoughts={life.thoughts} today={today} onBoardChange={saveBoard} onOpenReading={() => selectView("reading")} onOpenMedia={() => selectView("media")} onOpenThoughts={() => selectView("thoughts")}/>}
         </>}
         {!taskView && loading && <p className="domain-loading" role="status">正在打开你的生活记录…</p>}
+        {IS_STATIC_PREVIEW && <aside className="preview-notice" aria-label="试用版数据说明"><Icon name="file" size={17}/><div><strong>个人记录与备份</strong><p>数据仅保存在当前浏览器，手机与电脑独立，记得导出备份。</p><p>清除浏览器数据会删除记录；无需连接外部 AI。</p></div></aside>}
         <footer className="page-footer"><span>有序 <span className="footer-dot">·</span> {IS_STATIC_PREVIEW ? "GitHub Pages 试用版" : "给生活一点空间"}</span><div><span className="storage-label">{IS_STATIC_PREVIEW ? "内容仅保存在当前浏览器" : "内容保存在当前服务器"}</span><button className="footer-button" onClick={() => void exportData()} disabled={exporting || loading || loadFailed || clearing || lifeSaving || restoring}><Icon name="download" size={14}/>{exporting ? "正在导出…" : "导出备份"}</button><button className="footer-button" onClick={() => restoreInput.current?.click()} disabled={restoring || loading || loadFailed || clearing || lifeSaving}><Icon name="upload" size={14}/>{restoring ? "正在恢复…" : "恢复备份"}</button>{IS_STATIC_PREVIEW && <button className="footer-button danger" onClick={() => void clearBrowserData()} disabled={clearing || loading || loadFailed || restoring || saving || lifeSaving}><Icon name="trash" size={14}/>{clearing ? "正在清空…" : "清空浏览器数据"}</button>}<input className="visually-hidden" type="file" ref={restoreInput} accept=".json,application/json" aria-label="选择完整备份文件" onChange={event => void restoreData(event.target.files?.[0])}/></div></footer>
       </div>
     </main>

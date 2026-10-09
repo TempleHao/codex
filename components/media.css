@@ -141,3 +141,78 @@
 .media-feeling-card header{align-items:flex-start}.media-feeling-card h3{font-size:20px}
 .media-panel .eyebrow{font-size:9px}.trakt-config{font-size:11px}
 }
+
+/* Keep films, series and personal memories in the same journal as the life board. */
+.media-panel { color: var(--ink); }
+.media-header { align-items: flex-end; margin: 0 0 28px; padding-bottom: 26px; border-bottom: 1px solid var(--line); }
+.media-header .eyebrow { color: var(--peach); font-size: 11px; letter-spacing: 2px; }
+.media-header h1 { font-size: clamp(30px, 3.3vw, 40px); font-family: var(--font-serif); font-weight: 500; line-height: 1.5; margin: 10px 0; }
+.media-header p:last-child { font-size: 14px; color: var(--muted); line-height: 1.9; }
+.media-view-nav { padding: 6px; background: #eeefe8; border: 1px solid var(--line); border-radius: 13px; margin-bottom: 28px; gap: 4px; }
+.media-view-nav button { border-radius: 9px; min-height: 40px; padding: 9px 22px; color: var(--muted); font-size: 13px; }
+.media-view-nav button[aria-pressed="true"] { background: var(--surface); color: var(--green); box-shadow: 0 2px 8px #263b3210; }
+.media-view-nav > span { padding-right: 10px; color: var(--muted); font-size: 12px; }
+.media-card { background: var(--surface); border-color: var(--line); border-radius: var(--radius-card); padding: 26px; box-shadow: var(--shadow-card); }
+.media-card h2, .media-section-header h2 { font-family: var(--font-serif); font-size: 24px; font-weight: 500; line-height: 1.5; }
+.media-card p, .media-section-header p { color: var(--muted); font-size: 14px; line-height: 1.95; }
+.media-muted, .media-sync-state { color: var(--muted); font-size: 12px !important; }
+.media-sync-state { margin: -8px 0 22px; }
+.media-year-review { background: var(--green-light); border-color: #d4dece; }
+.media-year-review header h2 { font-size: 27px; }
+.media-overview strong { color: var(--green); font-family: var(--font-serif); font-size: 40px; font-weight: 500; }
+.media-overview article > span, .media-overview small { color: var(--muted); font-size: 12px; }
+.media-section-header { margin-bottom: 20px; }
+.media-section-header .text-button { font-size: 12px; min-height: 38px; }
+.media-titles { grid-template-columns: repeat(auto-fill, minmax(156px, 1fr)); gap: 28px 20px; }
+.media-title { gap: 13px; }
+.media-title strong { color: var(--ink); font-size: 15px; line-height: 1.8; }
+.media-title :is(small, em, time) { font-size: 12px; color: var(--muted); line-height: 1.9; }
+.media-title-art { border-radius: 12px; background: #476354; box-shadow: 0 4px 12px #263b3210; color: #f7f5ef; font-family: var(--font-serif); font-size: 40px; transition: box-shadow .2s; }
+.media-art-show { background: #90785a; }
+.media-title-art small { font-family: var(--sans); font-size: 11px; color: #fffefa; bottom: 13px; }
+.media-title:hover .media-title-art { box-shadow: 0 8px 22px #263b3228; }
+.media-note-mark { font-size: 11px; color: var(--green); background: var(--green-light); }
+.media-months :is(span, small), .media-genres small { font-size: 12px; color: var(--muted); }
+.media-months i { background: #66866b; border-radius: 5px 5px 0 0; }
+.media-genres li { font-size: 14px; }
+.media-genres meter { accent-color: var(--green); }
+.media-card select, .media-section-header select, .media-search input, .media-editor .field :is(input, select, textarea), .trakt-sync input { background: var(--paper); color: var(--ink); border-color: var(--line); border-radius: 10px; font-size: 14px; min-height: 44px; }
+.media-empty h3 { color: var(--ink); font-family: var(--font-serif); font-size: 24px; font-weight: 500; }
+.media-empty > span { color: var(--peach); }
+.media-empty p { font-size: 14px; color: var(--muted); }
+.media-feeling-card h3 { font-size: 25px; color: var(--ink); }
+.media-feeling-text, .media-thought, .media-episode-thought { border-left-color: #c8a67d; color: var(--ink); font-size: 14px; line-height: 2; }
+.media-dialog { background: var(--surface); border-color: var(--line); border-radius: 22px; box-shadow: 0 24px 80px #1b302b30; }
+.media-detail-header { border-color: var(--line); background: var(--surface); }
+.media-detail-top h2 { color: var(--ink); font-family: var(--font-serif); font-size: 28px; font-weight: 500; }
+.media-season { border-color: var(--line); border-radius: 12px; background: var(--paper); }
+.media-history, .media-history li, .media-seasons summary, .media-episode p { font-size: 13px; color: var(--muted); line-height: 1.9; }
+.media-settings { border-color: var(--line); margin-top: 30px; }
+.media-settings > summary { color: var(--muted); font-size: 13px; min-height: 38px; }
+.media-tools button, .media-editor .field, .media-editor .field > span { font-size: 13px; }
+.trakt-config, .trakt-preview { color: var(--muted); background: var(--paper); border-color: var(--line); font-size: 13px; }
+.trakt-config :is(summary, a) { color: var(--green); }
+.media-panel :is(button, input, select, textarea, summary):focus-visible { outline-color: var(--peach); }
+@media (max-width: 640px) {
+  .media-header { align-items: flex-start; margin-bottom: 22px; padding-bottom: 22px; }
+  .media-header h1 { font-size: 30px; }
+  .media-header p:last-child { font-size: 13px; }
+  .media-view-nav { margin-bottom: 24px; gap: 2px; }
+  .media-view-nav button { padding: 9px 13px; font-size: 13px; }
+  .media-view-nav > span { font-size: 12px; padding-right: 4px; }
+  .media-card { padding: 23px 18px; }
+  .media-card h2, .media-section-header h2 { font-size: 23px; }
+  .media-card p, .media-section-header p { font-size: 13px; }
+  .media-titles { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 25px 15px; }
+  .media-title strong { font-size: 14px; }
+  .media-title-art { border-radius: 10px; }
+  .media-overview { gap: 10px; }
+  .media-overview strong { font-size: 34px; }
+  .media-months { gap: 4px; }
+  .media-months small { font-size: 10px; }
+  .media-section-header select { max-width: 105px; }
+  .media-card select, .media-section-header select, .media-search input, .media-editor .field :is(input, select, textarea), .trakt-sync input { font-size: 16px; }
+  .media-detail-top h2 { font-size: 25px; }
+  .media-feeling-card h3 { font-size: 23px; }
+  .media-detail-header .text-button { font-size: 12px; }
+}

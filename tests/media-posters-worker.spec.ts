@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { readFile, writeFile } from "node:fs/promises";
 import { emptyLifeData } from "../lib/life";
 
 const CACHE = "life-workbench-public-posters-opaque-v1";
@@ -30,16 +31,18 @@ test(`CORS拒绝后以同源SW地址显示opaque公共海报，刷新复用并�
   if (upgrading) {
     // A deployed version 2 shares the script URL but cannot acknowledge native-host support.
     // The client must wait for version 3 before serving an image through the cache endpoint.
-    await context.route("**/media-posters-worker.js", route => route.fulfill({
-      contentType: "application/javascript",
-      body: 'self.addEventListener("install", e => e.waitUntil(self.skipWaiting())); self.addEventListener("activate", e => e.waitUntil(self.clients.claim())); self.addEventListener("message", e => { if (e.data?.type === "version") e.ports[0]?.postMessage({ version: 2 }); });',
-    }));
-    await page.evaluate(async () => {
-      await navigator.serviceWorker.register(new URL("media-posters-worker.js", location.href).href, { scope: new URL("./", location.href).pathname });
-      await navigator.serviceWorker.ready;
-      if (!navigator.serviceWorker.controller) await new Promise<void>(resolve => navigator.serviceWorker.addEventListener("controllerchange", () => resolve(), { once: true }));
-    });
-    await context.unroute("**/media-posters-worker.js");
+    // Serve both worker versions over HTTP. Intercepting the installation script
+    // leaves Chromium's worker update request unfinished during a later reload.
+    const workerFile = "preview-out/media-posters-worker.js";
+    const currentWorker = await readFile(workerFile);
+    try {
+      await writeFile(workerFile, 'self.addEventListener("install", e => e.waitUntil(self.skipWaiting())); self.addEventListener("activate", e => e.waitUntil(self.clients.claim())); self.addEventListener("message", e => { if (e.data?.type === "version") e.ports[0]?.postMessage({ version: 2 }); });');
+      await page.evaluate(async () => {
+        await navigator.serviceWorker.register(new URL("media-posters-worker.js", location.href).href, { scope: new URL("./", location.href).pathname, updateViaCache: "none" });
+        await navigator.serviceWorker.ready;
+        if (!navigator.serviceWorker.controller) await new Promise<void>(resolve => navigator.serviceWorker.addEventListener("controllerchange", () => resolve(), { once: true }));
+      });
+    } finally { await writeFile(workerFile, currentWorker); }
     await page.evaluate(async ({ name, poster }) => {
       // Existing artwork survives the upgrade, including its legacy cache key.
       const response = await fetch(poster, { mode: "no-cors", credentials: "omit", referrerPolicy: "no-referrer" });
@@ -53,7 +56,7 @@ test(`CORS拒绝后以同源SW地址显示opaque公共海报，刷新复用并�
   await page.evaluate(state => {
     localStorage.setItem("life-workbench-preview-v1", JSON.stringify(state));
   }, { version: 1, tasks: [], sources: [], batches: {}, life });
-  await page.reload();
+  await page.reload({ waitUntil: "domcontentloaded" });
   const openMedia = async () => {
     await expect(page.getByRole("button", { name: "导出备份", exact: true })).toBeEnabled();
     await page.getByRole("navigation", { name: "主导航" }).getByRole("button", { name: /^影音/ }).click();
@@ -96,7 +99,9 @@ test(`CORS拒绝后以同源SW地址显示opaque公共海报，刷新复用并�
     const response = await cache.match(keys[0]);
     return { count: keys.length, type: response?.type, status: response?.status, bytes: (await response?.blob())?.size };
   }, CACHE)).toEqual({ count: 1, type: "opaque", status: 0, bytes: 0 });
-  await page.reload();
+  // Wait for the document, then assert the actual cached images below. The global
+  // load event can wait on unrelated image requests during a worker upgrade.
+  await page.reload({ waitUntil: "domcontentloaded" });
   await openMedia();
   await expect(images).toHaveCount(2);
   await expect.poll(async () => images.evaluateAll(nodes => nodes.every(node => (node as HTMLImageElement).naturalWidth === 2))).toBe(true);
