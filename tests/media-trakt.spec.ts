@@ -1,7 +1,8 @@
+import { test as base, readPreviewWorkspace, writePreviewWorkspace, decodePreviewWorkspace } from "./preview-fixtures";
 import { optionalSnapshot } from "./snapshot-audit";
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
-import { expect, test as base, type Page } from "@playwright/test";
+import { expect, type Page } from "@playwright/test";
 import { emptyLifeData, lifeDataSchema, type LifeData } from "../lib/life";
 import { TRAKT_AUTH_CONTEXT_KEY } from "../lib/trakt";
 
@@ -104,8 +105,7 @@ function originalState(): StoredWorkspace {
 
 async function rawStorage(page: Page) { return page.evaluate(key => localStorage.getItem(key), STORAGE_KEY); }
 async function persisted(page: Page): Promise<StoredWorkspace | null> {
-  const raw = await rawStorage(page);
-  return raw === null ? null : JSON.parse(raw);
+  return readPreviewWorkspace<StoredWorkspace>(page);
 }
 async function ensureMediaSettingsOpen(page: Page) {
   const settings = page.locator("details.media-settings");
@@ -128,7 +128,7 @@ async function openMedia(page: Page, options: { https?: boolean; seed?: StoredWo
   await page.goto(options.https ? APP_URL : "./");
   await expect(page.getByRole("button", { name: "导出备份", exact: true })).toBeEnabled();
   if (options.seed) {
-    await page.evaluate(({ key, value }) => localStorage.setItem(key, JSON.stringify(value)), { key: STORAGE_KEY, value: options.seed });
+    await writePreviewWorkspace(page, options.seed);
     await page.reload();
     await expect(page.getByRole("button", { name: "导出备份", exact: true })).toBeEnabled();
   }
@@ -429,11 +429,9 @@ test("旧片单凭公开 Client ID 修复海报，补图期间的新评分感想
   expect(diagnostic).not.toMatch(/https?:\/\//);
 
   // Preserve the saved public configuration while simulating another old record without a poster.
-  await page.evaluate(key => {
-    const saved = JSON.parse(localStorage.getItem(key)!);
-    delete saved.life.media.entries.find((entry: { id: string }) => entry.id === "trakt:movie:1").poster;
-    localStorage.setItem(key, JSON.stringify(saved));
-  }, STORAGE_KEY);
+  const savedWithoutPoster = (await readPreviewWorkspace(page))!;
+  delete savedWithoutPoster.life.media.entries.find(entry => entry.id === "trakt:movie:1")!.poster;
+  await writePreviewWorkspace(page, savedWithoutPoster);
   const summaryCalls = trakt.summaryCalls.length;
   await page.reload();
   await expect(page.getByRole("button", { name: "导出备份", exact: true })).toBeEnabled();
@@ -657,7 +655,7 @@ test("错误授权 state 不换令牌，后续接口失败不保存部分资料�
   await expect(page.getByRole("button", { name: "导出备份", exact: true })).toBeEnabled();
   await expect.poll(async () => (await persisted(page))?.life.media.entries.find(entry => entry.id === "trakt:movie:1")?.poster).toBe(PUBLIC_POSTER_URL);
   const repaired = await persisted(page);
-  const original = JSON.parse(before!) as StoredWorkspace;
+  const original = await decodePreviewWorkspace<StoredWorkspace>(before!);
   // Public artwork repair may add only a poster; all existing workspace data stays exact.
   const withoutPosters = (workspace: StoredWorkspace) => ({
     ...workspace,
@@ -673,11 +671,11 @@ test("错误授权 state 不换令牌，后续接口失败不保存部分资料�
   await expectAuthorizationCleared(page, [AUTHORIZATION_CODE, ACCESS_TOKEN, REFRESH_TOKEN, ...trakt.states, ...trakt.verifiers]);
 });
 
-test("390px 手机中的五个主导航排成一行，长片名与感想保存回看时没有横向溢出", async ({ page }) => {
+test("390px 手机中的六个主导航排成一行，长片名与感想保存回看时没有横向溢出", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await openMedia(page);
   const navigation = page.getByRole("navigation", { name: "主导航" });
-  await expect(navigation.getByRole("button")).toHaveCount(5);
+  await expect(navigation.getByRole("button")).toHaveCount(6);
   const buttons = await navigation.getByRole("button").all();
   const bounds = await Promise.all(buttons.map(button => button.boundingBox()));
   expect(bounds.every(bound => bound !== null)).toBe(true);
@@ -687,7 +685,7 @@ test("390px 手机中的五个主导航排成一行，长片名与感想保存�
     expect(bound!.x).toBeGreaterThanOrEqual(0);
     expect(bound!.x + bound!.width).toBeLessThanOrEqual(390);
   }
-  for (const name of ["人生看板", "阅读", "影音", "思考", "事务"]) await expect(navigation.getByRole("button", { name: new RegExp(`^${name}`) })).toBeVisible();
+  for (const name of ["人生看板", "阅读", "影音", "思考", "财务", "事务"]) await expect(navigation.getByRole("button", { name: new RegExp(`^${name}`) })).toBeVisible();
   await expectNoHorizontalOverflow(page);
   await page.getByRole("button", { name: "记一部作品", exact: true }).click();
   const form = page.getByRole("form", { name: "影音记录表单", exact: true });

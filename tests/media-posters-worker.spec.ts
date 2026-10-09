@@ -1,4 +1,5 @@
-import { expect, test } from "@playwright/test";
+import { test, writePreviewWorkspace } from "./preview-fixtures";
+import { expect } from "@playwright/test";
 import { readFile, writeFile } from "node:fs/promises";
 import { emptyLifeData } from "../lib/life";
 
@@ -53,9 +54,7 @@ test(`CORS拒绝后以同源SW地址显示opaque公共海报，刷新复用并�
   }
   const life = emptyLifeData();
   life.media.entries = [{ id: "manual:public-poster", title: "公共海报测试", kind: "movie", genres: [], status: "wanted", history: [], poster: POSTER }];
-  await page.evaluate(state => {
-    localStorage.setItem("life-workbench-preview-v1", JSON.stringify(state));
-  }, { version: 1, tasks: [], sources: [], batches: {}, life });
+  await writePreviewWorkspace(page, { version: 1, tasks: [], sources: [], batches: {}, life });
   await page.reload({ waitUntil: "domcontentloaded" });
   const openMedia = async () => {
     await expect(page.getByRole("button", { name: "导出备份", exact: true })).toBeEnabled();

@@ -10,6 +10,9 @@ import { mergeReadingLibraries, type ReadingLibrary } from "@/lib/reading";
 import ReadingPanel, { type ReadingTaskDraft, type ReadingThoughtDraft } from "@/components/ReadingPanel";
 import ThoughtsPanel from "@/components/ThoughtsPanel";
 import LifeBoard from "@/components/LifeBoard";
+import LifeOverview from "@/components/LifeOverview";
+import WorkspaceGate from "@/components/WorkspaceGate";
+import { lockWorkspace } from "@/lib/workspace-lock";
 import ReadingRevisit, { type ReadingNoteRequest } from "@/components/ReadingRevisit";
 import { useReadingRevisit } from "@/components/useReadingRevisit";
 import LifeRevisit, { useLifeRevisitSelection } from "@/components/LifeRevisit";
@@ -20,6 +23,8 @@ import { useBlogAutoSync } from "@/components/useBlogAutoSync";
 import { clearBlogCache } from "@/lib/blog-cache";
 import WeReadSync from "@/components/WeReadSync";
 import MediaPanel from "@/components/MediaPanel";
+import FinancePanel from "@/components/FinancePanel";
+import type { FinanceLibrary } from "@/lib/finance";
 import { useTraktAutoSync } from "@/components/useTraktAutoSync";
 import { mergeMediaLibraries } from "@/lib/media";
 import { mediaWorkCount } from "@/lib/media-view";
@@ -29,8 +34,8 @@ import type { MediaEntry, MediaLibrary } from "@/lib/media";
 import { MAX_BACKUP_BYTES } from "@/lib/backup";
 
 type TaskView = "today" | "inbox" | "all" | "done";
-type View = TaskView | "reading" | "media" | "thoughts" | "life";
-type IconName = "sun" | "inbox" | "list" | "check" | "plus" | "arrow" | "close" | "search" | "download" | "upload" | "edit" | "trash" | "leaf" | "spark" | "file" | "chevron" | "book" | "film";
+type View = TaskView | "reading" | "media" | "thoughts" | "life" | "finance";
+type IconName = "sun" | "inbox" | "list" | "check" | "plus" | "arrow" | "close" | "search" | "download" | "upload" | "edit" | "trash" | "leaf" | "spark" | "file" | "chevron" | "book" | "film" | "wallet";
 
 function Icon({ name, size = 20, className = "" }: { name: IconName; size?: number; className?: string }) {
   const paths: Record<IconName, React.ReactNode> = {
@@ -46,6 +51,7 @@ function Icon({ name, size = 20, className = "" }: { name: IconName; size?: numb
     spark: <><path d="m12 3 2.5 6.5L21 12l-6.5 2.5L12 21l-2.5-6.5L3 12l6.5-2.5L12 3Z"/></>,
     file: <><path d="M14 2H5v20h14V7l-5-5Zm0 0v5h5M8 12h8M8 16h6"/></>, chevron: <path d="m9 5 7 7-7 7"/>,
     book: <><path d="M12 5C8 3 4 3 2 4v15c3-1 7-1 10 1 3-2 7-2 10-1V4c-2-1-6-1-10 1Z"/><path d="M12 5v15"/></>,
+    wallet: <><path d="M20 7H5a2 2 0 0 1 0-4h13v4M3 5v14a2 2 0 0 0 2 2h15V7"/><path d="M20 11h-5v6h5M16 14h1"/></>,
   };
   return <svg className={className} width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">{paths[name]}</svg>;
 }
@@ -54,6 +60,7 @@ const EMPTY: WorkspaceData = { tasks: [], sources: [] };
 const NAV: { id: View; title: string; icon: IconName }[] = [
   { id: "life", title: "人生看板", icon: "leaf" },
   { id: "reading", title: "阅读", icon: "book" }, { id: "media", title: "影音", icon: "film" }, { id: "thoughts", title: "思考", icon: "file" },
+  { id: "finance", title: "财务", icon: "wallet" },
   { id: "all", title: "事务", icon: "list" },
 ];
 const TASK_NAV: { id: TaskView; title: string }[] = [
@@ -90,7 +97,9 @@ function TaskFields({ value, onChange, prefix, disabled = false }: { value: Task
   </fieldset>;
 }
 
-export default function Home() {
+export default function Home() { return <WorkspaceGate><Workbench/></WorkspaceGate>; }
+
+function Workbench() {
   const [data, setData] = useState<WorkspaceData>(EMPTY);
   const [life, setLife] = useState<LifeData>(emptyLifeData);
   const [thoughtDraft, setThoughtDraft] = useState<ReadingThoughtDraft | null>(null);
@@ -181,7 +190,7 @@ export default function Home() {
 
   const isToday = (task: Task) => task.status === "todo" && (task.plannedDate === today || Boolean(task.dueDate && task.dueDate <= today));
   const isInbox = (task: Task) => task.status === "todo" && ((!task.plannedDate && !task.dueDate) || task.needsClarification.some(item => item.trim()));
-  const counts: Record<View, number> = { today: data.tasks.filter(isToday).length, inbox: data.tasks.filter(isInbox).length, all: data.tasks.filter(t => t.status === "todo").length, done: data.tasks.filter(t => t.status === "done").length, reading: life.reading.books.length, media: mediaWorkCount(life.media.entries), thoughts: life.thoughts.length + (blog.archive?.entries.length ?? 0), life: life.board.threads.filter(thread => thread.state === "active").length };
+  const counts: Record<View, number> = { today: data.tasks.filter(isToday).length, inbox: data.tasks.filter(isInbox).length, all: data.tasks.filter(t => t.status === "todo").length, done: data.tasks.filter(t => t.status === "done").length, reading: life.reading.books.length, media: mediaWorkCount(life.media.entries), thoughts: life.thoughts.length + (blog.archive?.entries.length ?? 0), life: life.board.threads.filter(thread => thread.state === "active").length, finance: life.finance.transactions.length };
   const tasks = data.tasks.filter(task => view === "today" ? isToday(task) : view === "inbox" ? isInbox(task) : view === "done" ? task.status === "done" : task.status === "todo")
     .filter(task => area === "all" || task.area === area)
     .filter(task => `${task.title} ${task.notes} ${task.sourceExcerpt} ${task.needsClarification.join(" ")}`.toLocaleLowerCase().includes(search.toLocaleLowerCase()))
@@ -231,6 +240,10 @@ export default function Home() {
   async function saveThoughts(next: LifeData["thoughts"]) { await saveLifeSection("thoughts", next); }
   async function saveBoard(next: LifeBoardData) { await saveLifeSection("board", next); }
   async function saveMedia(next: MediaLibrary) { await saveLifeSection("media", next); }
+  async function saveFinance(next: FinanceLibrary) { await saveLifeSection("finance", next); }
+  async function rememberFinance(text: string, date: string) {
+    await saveBoard({ ...life.board, observations: [...life.board.observations, { id: crypto.randomUUID(), area: "财务", kind: "discovery", text, date, createdAt: new Date().toISOString() }] });
+  }
   async function mergeIncomingReading(incoming: ReadingLibrary) {
     await withLifeSave(async () => {
       const latest = await request<LifeData>("/api/life");
@@ -323,7 +336,7 @@ export default function Home() {
     if (exporting) return; setExporting(true); setError("");
     try {
       const backup = await request("/api/export"); const url = URL.createObjectURL(new Blob([JSON.stringify(backup, null, 2)], { type: "application/json" }));
-      const link = document.createElement("a"); link.href = url; link.download = `有序-备份-${today}.json`; document.body.appendChild(link); link.click(); link.remove(); URL.revokeObjectURL(url); setStatus("完整备份已导出，包含生活线索、经历、回顾、阅读、思考与事务。");
+      const link = document.createElement("a"); link.href = url; link.download = `有序-备份-${today}.json`; document.body.appendChild(link); link.click(); link.remove(); URL.revokeObjectURL(url); setStatus("完整备份已导出，包含生活线索、经历、回顾、阅读、影音、思考、财务与事务。");
     } catch (cause) { setError(cause instanceof Error ? cause.message : "导出失败，请重试。"); }
     finally { setExporting(false); }
   }
@@ -337,7 +350,7 @@ export default function Home() {
     finally { lifeBlocked.current = false; setRestoring(false); if (restoreInput.current) restoreInput.current.value = ""; }
   }
   async function clearBrowserData() {
-    if (!IS_STATIC_PREVIEW || clearing || lifeWorking.current || !window.confirm("清空这个浏览器中保存的全部生活线索、经历、回顾、阅读、影音、思考与待办、自动解锁设置、Trakt 连接及缓存？此操作无法撤销。请先导出需要保留的备份；已导出的文件不会受影响。")) return;
+    if (!IS_STATIC_PREVIEW || clearing || lifeWorking.current || !window.confirm("清空这个浏览器中保存的全部生活线索、经历、回顾、阅读、影音、思考、账单与待办、自动解锁设置、Trakt 连接及缓存？此操作无法撤销。请先导出需要保留的备份；已导出的文件不会受影响。")) return;
     lifeBlocked.current = true; setClearing(true); setError("");
     try {
       await trakt.disconnect();
@@ -347,7 +360,7 @@ export default function Home() {
       selectView("life");
       await clearMediaPosterCache();
       await clearPosterWorkerCache();
-      setStatus("当前浏览器中的生活记录、阅读、影音、思考、待办、原文和海报缓存已清空。");
+      setStatus("当前浏览器中的生活记录、阅读、影音、思考、账单、待办、原文和海报缓存已清空。");
     } catch (cause) { setError(cause instanceof Error ? cause.message : "清空失败，请重试。"); }
     finally { lifeBlocked.current = false; setClearing(false); }
   }
@@ -356,13 +369,13 @@ export default function Home() {
     <aside className="sidebar">
       <a href={`${APP_BASE_PATH}/`} className="brand" aria-label="有序首页"><span className="brand-mark"><Icon name="leaf" size={24}/></span><span>有序<small>人生工作台</small></span></a>
       <div className="sidebar-heading">我的空间</div>
-      <nav className="navigation" aria-label="主导航">{NAV.map(item => <button key={item.id} className={`nav-item ${(view === item.id || (item.id === "all" && taskView)) ? "active" : ""}`} aria-current={view === item.id || (item.id === "all" && taskView) ? "page" : undefined} disabled={lifeSaving || restoring || clearing} onClick={() => selectView(item.id)}><Icon name={item.icon}/><span>{item.title}</span><small>{loading ? "·" : counts[item.id]}</small></button>)}</nav>
+      <nav className="navigation" aria-label="主导航">{NAV.map(item => <button key={item.id} className={`nav-item ${(view === item.id || (item.id === "all" && taskView)) ? "active" : ""}`} aria-current={view === item.id || (item.id === "all" && taskView) ? "page" : undefined} disabled={lifeSaving || restoring || clearing} onClick={() => selectView(item.id)}><Icon name={item.icon}/><span>{item.title}</span>{item.id !== "life" && <small>{loading ? "·" : counts[item.id]}</small>}</button>)}</nav>
       <div className="sidebar-note"><span className="tiny-star">✳</span><p>生活的线头，慢慢理清。<br/>看见经历，也看见自己。</p><span className="note-line"/></div>
       <div className="sidebar-bottom"><span className="save-dot"/>个人看板<span className="version">v{APP_VERSION}</span></div>
     </aside>
 
     <main className="main">
-      <header className="topbar"><span className="breadcrumb">我的空间 <span>/</span> <strong>{currentName}</strong></span><span className="date-label"><Icon name="sun" size={16}/>{dateLabel}</span></header>
+      <header className="topbar"><span className="breadcrumb">我的空间 <span>/</span> <strong>{currentName}</strong></span><span className="date-label"><Icon name="sun" size={16}/>{dateLabel}{IS_STATIC_PREVIEW && <button type="button" className="workspace-lock-button" aria-label="锁定我的空间" title="锁定我的空间" disabled={lifeSaving || restoring || clearing || saving} onClick={() => { if (window.confirm("锁定会收起当前页面和未保存的草稿，确认已经保存需要保留的内容吗？")) lockWorkspace(); }}><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" aria-hidden="true"><rect x="5" y="10" width="14" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3M12 14v3"/></svg></button>}</span></header>
       <div className="main-content">
         {taskView && <section className="page-intro"><div><p className="eyebrow">A LITTLE ORDER, A LITTLE MORE SPACE</p><h1>{active.title.split("，")[0]}，<span className="intro-title-tail">{active.title.split("，")[1]}</span></h1><p className="intro-description">{active.description}</p></div><button className="button primary collect-button" onClick={openImport} disabled={loading || loadFailed}><Icon name="plus" size={18}/>收集待办</button></section>}
 
@@ -389,8 +402,9 @@ export default function Home() {
         {!taskView && !loading && !loadFailed && <>
           {view === "reading" && <><ReadingPanel library={life.reading} noteRequest={readingNoteRequest} revisit={<ReadingRevisit controller={readingRevisit} onOpenNote={openReadingNote}/>} onLibraryChange={saveReading} onCreateTask={createLinkedTask} onCreateThought={input => { setThoughtDraft(input); selectView("thoughts"); }}/><WeReadSync onImport={mergeIncomingReading} controller={readingSync}/></>}
           {view === "media" && <MediaPanel library={life.media} onChange={saveMedia} onRemember={rememberMedia} trakt={trakt}/>}
+          {view === "finance" && <FinancePanel library={life.finance} onChange={saveFinance} onRemember={rememberFinance}/>}
           {view === "thoughts" && <ThoughtsPanel thoughts={life.thoughts} library={life.reading} onThoughtsChange={saveThoughts} onCreateTask={createLinkedTask} initialDraft={thoughtDraft} onDraftConsumed={() => setThoughtDraft(null)} blog={blog.archive} blogRequest={thoughtRequest} onBlogRequestConsumed={() => setThoughtRequest(null)} revisit={<ThoughtRevisit controller={thoughtRevisit} onOpenThought={openThought}/>} blogStatus={<div className="blog-sync-note" role="status"><span>{blog.busy ? "正在检查最新博客内容…" : blog.error || blog.message}{blog.archive && ` · ${blog.archive.entries.length} 条 · 资料同步于 ${new Date(blog.archive.updatedAt).toLocaleString("zh-CN", { timeZone: "Asia/Shanghai" })}`}</span><button type="button" className="text-button" disabled={blog.busy} onClick={() => void blog.refresh()}>检查更新</button></div>}/>}
-          {view === "life" && <LifeBoard board={life.board} revisit={<LifeRevisit reading={readingRevisit} thoughts={thoughtRevisit} selection={revisitSelection} onOpenNote={openReadingNote} onOpenThought={openThought}/>} reading={life.reading} media={life.media} thoughts={life.thoughts} thoughtCount={counts.thoughts} today={today} onBoardChange={saveBoard} onOpenReading={() => selectView("reading")} onOpenMedia={() => selectView("media")} onOpenThoughts={() => selectView("thoughts")}/>}
+          {view === "life" && <LifeBoard board={life.board} overview={<LifeOverview reading={life.reading} media={life.media} thoughts={life.thoughts} blog={blog.archive} finance={life.finance} onOpenReading={() => selectView("reading")} onOpenMedia={() => selectView("media")} onOpenThoughts={() => selectView("thoughts")} onOpenFinance={() => selectView("finance")}/>} revisit={<LifeRevisit reading={readingRevisit} thoughts={thoughtRevisit} selection={revisitSelection} onOpenNote={openReadingNote} onOpenThought={openThought}/>} reading={life.reading} media={life.media} thoughts={life.thoughts} thoughtCount={counts.thoughts} today={today} onBoardChange={saveBoard} onOpenReading={() => selectView("reading")} onOpenMedia={() => selectView("media")} onOpenThoughts={() => selectView("thoughts")} finance={life.finance} onOpenFinance={() => selectView("finance")}/>}
         </>}
         {!taskView && loading && <p className="domain-loading" role="status">正在打开你的生活记录…</p>}
         {IS_STATIC_PREVIEW && <aside className="preview-notice" aria-label="试用版数据说明"><Icon name="file" size={17}/><div><strong>个人记录与备份</strong><p>数据仅保存在当前浏览器，手机与电脑独立，记得导出备份。</p><p>清除浏览器数据会删除记录；无需连接外部 AI。</p></div></aside>}

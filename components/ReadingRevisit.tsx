@@ -41,7 +41,7 @@ export default function ReadingRevisit({ controller, onOpenNote, hideWhenEmpty =
   const date = noteDate(current?.note.createdAt);
   return <section className={embedded ? "reading-revisit revisit-embedded" : "reading-revisit"} aria-label={embedded ? "阅读回顾" : undefined} aria-labelledby={embedded ? undefined : "reading-revisit-title"}>
     {!embedded && <header className="revisit-heading"><div><p className="section-kicker">MEET YOUR WORDS AGAIN</p><h2 id="reading-revisit-title">偶然重逢</h2><p>一段曾经触动你的文字，今天再读一次。</p></div><div className="revisit-filters" role="group" aria-label="回顾内容">{FILTERS.map(([value, label]) => <button type="button" key={value} aria-pressed={filter === value} onClick={() => changeFilter(value)}>{label}</button>)}</div></header>}
-    {embedded && <div className="revisit-filters embedded-revisit-filters" role="group" aria-label="回顾内容">{FILTERS.map(([value, label]) => <button type="button" key={value} aria-pressed={filter === value} onClick={() => changeFilter(value)}>{label}</button>)}</div>}
+    {embedded && <div className="life-revisit-note-filters"><span className="life-revisit-filter-label">笔记类型</span><div className="revisit-filters embedded-revisit-filters" role="group" aria-label="回顾内容">{FILTERS.map(([value, label]) => <button type="button" key={value} aria-pressed={filter === value} onClick={() => changeFilter(value)}>{label}</button>)}</div></div>}
     <div className="revisit-content" aria-live="polite">
       {current ? <>
         <RevisitText key={`${current.note.id}:${thought}`} item={current} thought={thought}/>

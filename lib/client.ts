@@ -4,6 +4,7 @@ import { backupSchema, legacyBackupSchema, MAX_BACKUP_BYTES } from "./backup";
 import { applyLifePatch, emptyLifeData, lifeDataSchema, lifePatchSchema, mergeLifeBackups, type LifeData } from "./life";
 import type { SourceRecord, Task, WorkspaceData } from "./types";
 import { importBatchSchema, taskPatchSchema, validationErrorMessage } from "./validation";
+import { getWorkspaceLockState, withUnlockedWorkspace } from "./workspace-lock";
 
 export const IS_STATIC_PREVIEW = process.env.NEXT_PUBLIC_PREVIEW_MODE === "true";
 export const APP_VERSION = packageInfo.version;
@@ -110,6 +111,7 @@ export class BrowserStore {
     if (input !== null && typeof input === "object") {
       if (!Object.hasOwn(input, "board")) life.board = state.life.board;
       if (!Object.hasOwn(input, "media")) life.media = state.life.media;
+      if (!Object.hasOwn(input, "finance")) life.finance = state.life.finance;
     }
     state.life = life;
     this.write(state);
@@ -259,6 +261,7 @@ function currentBrowserStore(): BrowserStore {
 
 export async function request<T>(url: string, options?: RequestInit): Promise<T> {
   if (IS_STATIC_PREVIEW) {
+    if (getWorkspaceLockState().configured) return withUnlockedWorkspace(storage => new BrowserStore(storage).handleRequest<T>(url, options));
     const method = (options?.method || "GET").toUpperCase();
     if (["POST", "PUT", "PATCH", "DELETE"].includes(method) && typeof navigator !== "undefined" && navigator.locks) {
       // Every tab uses one exclusive lock for the shared localStorage document.

@@ -1,6 +1,7 @@
+import { test as base, readPreviewWorkspace, writePreviewWorkspace } from "./preview-fixtures";
 import { optionalSnapshot } from "./snapshot-audit";
 import { readFile } from "node:fs/promises";
-import { expect, test as base, type Page } from "@playwright/test";
+import { expect, type Page } from "@playwright/test";
 import { emptyLifeData, type LifeData } from "../lib/life";
 import { encryptReadingLibrary, type ReadingEnvelope } from "../lib/reading-envelope";
 import { readingLibrarySchema, type ReadingLibrary } from "../lib/reading";
@@ -73,15 +74,14 @@ async function rawStorage(page: Page): Promise<string | null> {
 }
 
 async function persisted(page: Page): Promise<StoredWorkspace | null> {
-  const raw = await rawStorage(page);
-  return raw === null ? null : JSON.parse(raw);
+  return readPreviewWorkspace<StoredWorkspace>(page);
 }
 
 async function openReading(page: Page, seed?: StoredWorkspace) {
   await page.goto("./");
   await expect(page.getByRole("button", { name: "导出备份", exact: true })).toBeEnabled();
   if (seed) {
-    await page.evaluate(({ key, value }) => localStorage.setItem(key, JSON.stringify(value)), { key: STORAGE_KEY, value: seed });
+    await writePreviewWorkspace(page, seed);
     await page.reload();
     await expect(page.getByRole("button", { name: "导出备份", exact: true })).toBeEnabled();
   }
@@ -243,6 +243,7 @@ test("存储不足保留解锁预览和旧数据，恢复空间后可重试确�
 test("未配置状态展示 GitHub Secrets 入口，网页没有 API Key 输入，也不读取官方接口", async ({ page }) => {
   const sync = await mockSync(page, { status: { version: 1, state: "needs_setup", updatedAt: UPDATED_AT, failureCode: "configuration_missing" } });
   await openReading(page);
+  const before = await rawStorage(page);
   await page.getByText("首次配置同步", { exact: true }).click();
   await expect(page.getByRole("link", { name: /Secrets/ })).toHaveAttribute("href", "https://github.com/TempleHao/codex/settings/secrets/actions");
   await expect(page.getByLabel("微信读书 API Key", { exact: true })).toHaveCount(0);
@@ -250,16 +251,17 @@ test("未配置状态展示 GitHub Secrets 入口，网页没有 API Key 输入�
   await expect(page.locator(".weread-sync")).toContainText("请先完成首次配置");
   await expect(page.getByRole("heading", { name: "已读取，等你确认", exact: true })).not.toBeVisible();
   expect(sync.requests.filter(path => path.endsWith("/weread-sync.json"))).toHaveLength(1);
-  expect(await rawStorage(page)).toBeNull();
+  expect(await rawStorage(page)).toBe(before);
 });
 
 test("本次同步失败但保留旧快照时明确显示状态，仍须解锁与确认", async ({ page }) => {
   await mockSync(page, { status: { version: 1, state: "preserved", updatedAt: UPDATED_AT, failureCode: "network_error" } });
   await openReading(page);
+  const before = await rawStorage(page);
   await unlock(page);
   await expect(page.getByRole("heading", { name: "已读取，等你确认", exact: true })).toBeVisible();
   await expect(page.locator(".weread-sync")).toContainText(/保留|旧资料|上次/);
-  expect(await rawStorage(page)).toBeNull();
+  expect(await rawStorage(page)).toBe(before);
 });
 
 test("浏览器生成随机长口令供首次配置，关闭配置即清除，不进入个人记录", async ({ page }) => {

@@ -1,6 +1,7 @@
+import { test as base, readPreviewWorkspace } from "./preview-fixtures";
 import { optionalSnapshot } from "./snapshot-audit";
 import { readFile } from "node:fs/promises";
-import { expect, test as base, type Page } from "@playwright/test";
+import { expect, type Page } from "@playwright/test";
 import type { LifeData, LifeObservation, LifeThread } from "../lib/life";
 import type { Area, WorkspaceData } from "../lib/types";
 
@@ -39,10 +40,7 @@ const test = base.extend<{ audit: void }>({
 });
 
 async function persisted(page: Page): Promise<StoredWorkspace | null> {
-  return page.evaluate(key => {
-    const raw = localStorage.getItem(key);
-    return raw === null ? null : JSON.parse(raw);
-  }, STORAGE_KEY);
+  return readPreviewWorkspace<StoredWorkspace>(page);
 }
 
 async function rawStorage(page: Page): Promise<string | null> {
@@ -109,14 +107,15 @@ async function createReview(page: Page, title: string, answers: { noticed: strin
 test("首页以人生看板开始，主导航区分阅读、影音、思考与事务，浏览不会创建待办", async ({ page }) => {
   await openBoard(page);
   const navigation = page.getByRole("navigation", { name: "主导航" });
-  await expect(navigation.getByRole("button")).toHaveCount(5);
-  for (const name of ["人生看板", "阅读", "影音", "思考", "事务"]) {
+  await expect(navigation.getByRole("button")).toHaveCount(6);
+  for (const name of ["人生看板", "阅读", "影音", "思考", "财务", "事务"]) {
     await expect(navigation.getByRole("button", { name: new RegExp(`^${name}`) })).toBeVisible();
   }
   await expect(page.getByRole("button", { name: "收集待办", exact: true })).not.toBeVisible();
   await expect(page.getByRole("heading", { name: /待办概览|今天还没有安排/ })).toHaveCount(0);
   await expect(page.getByRole("navigation", { name: "事务视图" })).not.toBeVisible();
-  expect(await rawStorage(page)).toBeNull();
+  const beforeBrowsing = await rawStorage(page);
+  expect(JSON.parse(beforeBrowsing!)).toMatchObject({ format: "life-workbench-encrypted" });
 
   await navigation.getByRole("button", { name: /^事务/ }).click();
   const taskNavigation = page.getByRole("navigation", { name: "事务视图" });
@@ -127,7 +126,7 @@ test("首页以人生看板开始，主导航区分阅读、影音、思考与�
   await navigation.getByRole("button", { name: /^人生看板/ }).click();
   await expect(page.locator(".life-board")).toBeVisible();
   await expectNoTasks(page);
-  expect(await rawStorage(page)).toBeNull();
+  expect(await rawStorage(page)).toBe(beforeBrowsing);
 });
 
 test("生活线索可编辑、暂放、归档与重新关注，独立记录和回顾保留经历而不生成待办", async ({ page }) => {
@@ -228,10 +227,11 @@ test("人生线索、记录和回顾包含在完整备份里，清空后可恢�
   expect(backup.sources).toEqual([]);
   page.once("dialog", confirmation => confirmation.accept());
   await page.getByRole("button", { name: "清空浏览器数据", exact: true }).click();
-  await expect(page.locator(".feedback")).toContainText("生活记录、阅读、影音、思考、待办、原文和海报缓存已清空");
+  await expect(page.locator(".feedback")).toContainText("生活记录、阅读、影音、思考、账单、待办、原文和海报缓存已清空");
   await expect(page.locator(".life-thread-card")).toHaveCount(0);
   await expect(page.locator(".life-timeline-item")).toHaveCount(0);
-  expect(await rawStorage(page)).toBeNull();
+  expect((await persisted(page))?.life.board).toEqual({ threads: [], observations: [], reviews: [] });
+  expect(JSON.parse((await rawStorage(page))!)).toMatchObject({ format: "life-workbench-encrypted" });
   await page.reload();
   await expect(page.getByRole("button", { name: "导出备份", exact: true })).toBeEnabled();
   for (let attempt = 0; attempt < 2; attempt += 1) {
@@ -340,8 +340,8 @@ test("两个标签页分别保存经历与思考时互相保留，旧看板修�
   const otherPage = await context.newPage();
   try {
     await openBoard(otherPage);
-    expect(await rawStorage(page)).toBeNull();
-    expect(await rawStorage(otherPage)).toBeNull();
+    expect((await persisted(page))?.life.board.threads).toEqual([]);
+    expect((await persisted(otherPage))?.life.board.threads).toEqual([]);
     await page.locator(".life-board-intro").getByRole("button", { name: "留下一段记录", exact: true }).click();
     const boardDialog = page.getByRole("dialog");
     const experience = "周末走了一条从未走过的街，发现熟悉的城市还有很多陌生的角落。";

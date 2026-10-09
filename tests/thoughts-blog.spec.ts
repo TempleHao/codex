@@ -1,4 +1,5 @@
-import { expect, test, type Page } from "@playwright/test";
+import { test, readPreviewWorkspace, writePreviewWorkspace } from "./preview-fixtures";
+import { expect, type Page } from "@playwright/test";
 import { emptyLifeData } from "../lib/life";
 import type { BlogArchive } from "../lib/blog";
 
@@ -20,7 +21,7 @@ async function open(page: Page) {
   life.thoughts = [{ id: LOCAL_ID, title: "今天随手写", body: "一个属于今天的疑问。", createdAt: "2026-10-08T00:00:00Z", updatedAt: "2026-10-09T00:00:00Z" }];
   await page.goto("./");
   await expect(page.getByRole("button", { name: "导出备份", exact: true })).toBeEnabled();
-  await page.evaluate(({ key, life }) => localStorage.setItem(key, JSON.stringify({ version: 1, tasks: [], sources: [], batches: {}, life })), { key: KEY, life });
+  await writePreviewWorkspace(page, { version: 1, tasks: [], sources: [], batches: {}, life });
   await page.reload();
   await expect(page.getByRole("button", { name: "导出备份", exact: true })).toBeEnabled();
   await page.getByRole("navigation", { name: "主导航" }).getByRole("button", { name: /^思考/ }).click();
@@ -50,7 +51,7 @@ test("统一时间线按原日期排列，分页和来源年份搜索不改写�
   await page.getByRole("searchbox", { name: "搜索思考" }).fill("第 85 条");
   await expect(page.locator(".thoughts-blog-card")).toHaveCount(1);
   await expect(page.locator(".thoughts-blog-card")).toContainText("旧文字 85");
-  const stored = await page.evaluate(key => JSON.parse(localStorage.getItem(key)!).life.thoughts, KEY);
+  const stored = (await readPreviewWorkspace(page))!.life.thoughts;
   expect(stored).toHaveLength(1);
   expect(stored[0].createdAt).toBe("2026-10-08T00:00:00Z");
 });
@@ -66,7 +67,7 @@ test("博客长原文安全展示，重读感受另存为本地思考并保留�
   await first.getByRole("button", { name: "写下此刻的感受" }).click();
   await page.getByLabel("我的想法", { exact: true }).fill("今天再读，我想留一点耐心。");
   await page.getByRole("button", { name: "保存思考", exact: true }).click();
-  const stored = await page.evaluate(key => JSON.parse(localStorage.getItem(key)!).life.thoughts, KEY);
+  const stored = (await readPreviewWorkspace(page))!.life.thoughts;
   expect(stored).toHaveLength(2);
   expect(stored[1].sourceExcerpt).toContain(archive.entries[0].sourceUrl);
   expect(stored[1].sourceExcerpt).toContain("测试作者");
@@ -122,7 +123,7 @@ test("刷新合并新博客内容，网络失败时缓存和本机思考都保�
   await expect(page.locator(".blog-sync-note")).toContainText("已缓存的内容");
   await expect(page.locator(".blog-sync-note")).toContainText("86 条");
   await expect(page.locator(".thoughts-list")).toContainText(added.text);
-  const stored = await page.evaluate(key => JSON.parse(localStorage.getItem(key)!).life.thoughts, KEY);
+  const stored = (await readPreviewWorkspace(page))!.life.thoughts;
   expect(stored).toHaveLength(1);
   expect(stored[0].body).toBe("一个属于今天的疑问。");
 });

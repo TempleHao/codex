@@ -1,6 +1,7 @@
+import { test as base, readPreviewWorkspace, watchPreviewUnlock } from "./preview-fixtures";
 import { optionalSnapshot } from "./snapshot-audit";
 import { readFile } from "node:fs/promises";
-import { expect, test as base, type Page } from "@playwright/test";
+import { expect, type Page } from "@playwright/test";
 import type { WorkspaceData } from "../lib/types";
 import type { LifeData } from "../lib/life";
 
@@ -37,12 +38,8 @@ const test = base.extend<{ audit: Audit }>({
 });
 
 async function savedData(page: Page): Promise<WorkspaceData> {
-  return page.evaluate(key => {
-    const raw = localStorage.getItem(key);
-    if (raw === null) return { tasks: [], sources: [] };
-    const value = JSON.parse(raw);
-    return { tasks: value.tasks, sources: value.sources };
-  }, STORAGE_KEY);
+  const value = await readPreviewWorkspace(page);
+  return { tasks: value?.tasks ?? [], sources: value?.sources ?? [] };
 }
 
 async function selectView(page: Page, name: string) {
@@ -163,7 +160,7 @@ test("静态版聊天导入、刷新、完成、编辑、清空和备份恢复�
   await page.getByRole("button", { name: "清空浏览器数据", exact: true }).click();
   await expect(page.getByRole("status")).toContainText("原文和海报缓存已清空");
   expect(await savedData(page)).toEqual({ tasks: [], sources: [] });
-  expect(await page.evaluate(key => localStorage.getItem(key), STORAGE_KEY)).toBeNull();
+  expect((await readPreviewWorkspace(page))?.life.reading.books ?? []).toEqual([]);
   await page.reload();
   await expect(page.getByRole("navigation", { name: "主导航" }).getByRole("button", { name: /^人生看板/ })).toHaveAttribute("aria-current", "page");
   await page.getByLabel("选择完整备份文件").setInputFiles(filename!);
@@ -178,6 +175,7 @@ test("静态版聊天导入、刷新、完成、编辑、清空和备份恢复�
   try {
     const otherPage = await otherContext.newPage();
     audit.watch(otherPage);
+    watchPreviewUnlock(otherPage);
     await otherPage.goto(page.url());
     await expect(otherPage.getByRole("button", { name: "导出备份", exact: true })).toBeEnabled();
     await expect(otherPage.getByRole("navigation", { name: "主导航" }).getByRole("button", { name: /^人生看板/ })).toHaveAttribute("aria-current", "page");
@@ -220,6 +218,7 @@ test("静态版手机视口可以收集、编辑和清空，页面无横向滚�
 test("阅读与思考独立保存，可选事务工具和完整备份仍可使用", async ({ page }) => {
   test.setTimeout(60_000);
   await openWorkspace(page);
+  const beforeReadingPreview = await page.evaluate(key => localStorage.getItem(key), STORAGE_KEY);
   await selectView(page, "阅读");
   await page.getByRole("button", { name: "导入阅读 JSON", exact: true }).click();
   const library = {
@@ -231,7 +230,7 @@ test("阅读与思考独立保存，可选事务工具和完整备份仍可使�
   await dialog.getByLabel("阅读资料 JSON", { exact: true }).fill(JSON.stringify(library));
   await dialog.getByRole("button", { name: "预览资料", exact: true }).click();
   expect((await savedData(page)).tasks).toHaveLength(0);
-  expect(await page.evaluate(key => localStorage.getItem(key), STORAGE_KEY)).toBeNull();
+  expect(await page.evaluate(key => localStorage.getItem(key), STORAGE_KEY)).toBe(beforeReadingPreview);
   await dialog.getByRole("button", { name: "确认导入", exact: true }).click();
   await expect(dialog).not.toBeVisible();
   await expect(page.locator(".reading-book-facts")).toContainText("1%");
@@ -254,7 +253,7 @@ test("阅读与思考独立保存，可选事务工具和完整备份仍可使�
   const saved = await savedData(page);
   expect(saved.tasks).toHaveLength(1);
   expect(saved.tasks[0].notes).toContain(library.highlights[0].text);
-  const life = await page.evaluate(key => JSON.parse(localStorage.getItem(key)!).life as LifeData, STORAGE_KEY);
+  const life = (await readPreviewWorkspace(page))!.life;
   expect(life.reading.books).toHaveLength(1);
   expect(life.thoughts[0]).toMatchObject({ title: "周末整理我的生活计划", bookId: "book-test", highlightId: "highlight-test", sourceExcerpt: library.highlights[0].text });
   const downloadPromise = page.waitForEvent("download");
@@ -269,7 +268,7 @@ test("阅读与思考独立保存，可选事务工具和完整备份仍可使�
   await page.getByLabel("选择完整备份文件").setInputFiles(backupPath!);
   await expect(page.getByRole("status").first()).toContainText("备份已恢复");
   expect(await savedData(page)).toEqual(saved);
-  expect(await page.evaluate(key => JSON.parse(localStorage.getItem(key)!).life, STORAGE_KEY)).toEqual(life);
+  expect((await readPreviewWorkspace(page))!.life).toEqual(life);
   await page.setViewportSize({ width: 390, height: 844 });
   for (const view of ["阅读", "思考", "人生看板"]) {
     await selectView(page, view);

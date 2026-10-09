@@ -1,4 +1,5 @@
-import { expect, test, type Page } from "@playwright/test";
+import { test, writePreviewWorkspace } from "./preview-fixtures";
+import { expect, type Page } from "@playwright/test";
 import { emptyLifeData } from "../lib/life";
 import type { ReadingHighlight } from "../lib/reading";
 
@@ -17,10 +18,10 @@ async function open(page: Page, notes = NOTES) {
   await page.addInitScript(() => { Math.random = () => 0; });
   await page.goto("./");
   await expect(page.getByRole("button", { name: "导出备份", exact: true })).toBeEnabled();
-  await page.evaluate(({ key, data }) => localStorage.setItem(key, JSON.stringify(data)), { key: KEY, data: seed });
+  await writePreviewWorkspace(page, seed);
   await page.reload();
   await expect(page.getByRole("button", { name: "导出备份", exact: true })).toBeEnabled();
-  return JSON.stringify(seed);
+  return saved(page);
 }
 async function saved(page: Page) { return page.evaluate(key => localStorage.getItem(key), KEY); }
 async function view(page: Page, name: string) {
