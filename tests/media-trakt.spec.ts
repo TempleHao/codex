@@ -154,6 +154,24 @@ async function expectNoTasks(page: Page) {
   expect(saved?.tasks ?? []).toEqual([]);
   expect(saved?.sources ?? []).toEqual([]);
 }
+
+test("缺图作品区分暂无封面，单部诊断只复制公开编号且不改原始资料", async ({ page, context }) => {
+  await context.grantPermissions(["clipboard-read", "clipboard-write"]);
+  const seed = originalState();
+  seed.life.media.entries = [{ ...seed.life.media.entries[0], id: "trakt:show:1", kind: "show", title: "Glad To Know You", year: 2020, traktUrl: "https://trakt.tv/shows/public-show-2020" }];
+  await openMedia(page, { seed });
+  const before = await rawStorage(page);
+  await expect(page.locator(".media-title-art")).toHaveAttribute("data-poster-state", "missing");
+  await expect(page.locator(".media-title-art")).toContainText("暂无封面");
+  const detail = await openMediaDetail(page, "Glad To Know You");
+  await expect(detail).toContainText("当前记录未包含 IMDb 编号");
+  await detail.getByText("这部作品的封面诊断", { exact: true }).click();
+  await detail.getByRole("button", { name: "复制这部作品的封面诊断", exact: true }).click();
+  const report = await page.evaluate(() => navigator.clipboard.readText());
+  expect(JSON.parse(report)).toMatchObject({ traktId: 1, imdbId: null, hasPosterAddress: false, state: "missing", traktUrl: "https://trakt.tv/shows/public-show-2020" });
+  for (const privateValue of [seed.life.media.entries[0].title, seed.life.media.entries[0].thought!, seed.life.media.entries[0].history[0].watchedAt, ACCESS_TOKEN, REFRESH_TOKEN]) expect(report).not.toContain(privateValue);
+  expect(await rawStorage(page)).toBe(before);
+});
 async function expectAuthorizationCleared(page: Page, secrets: string[]) {
   await expect(page).toHaveURL(APP_URL);
   expect(await page.evaluate(key => sessionStorage.getItem(key), TRAKT_AUTH_CONTEXT_KEY)).toBeNull();

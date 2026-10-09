@@ -1,4 +1,5 @@
 import type { MediaEntry } from "./media";
+import { normalizeMediaPoster, isSafeTraktLink } from "./media";
 import type { TraktArtworkProgress } from "./trakt";
 
 export interface PosterPlatform {
@@ -29,3 +30,20 @@ export function mediaPosterDiagnostics(entries: readonly MediaEntry[], states: r
   };
 }
 export type MediaPosterDiagnostics = ReturnType<typeof mediaPosterDiagnostics>;
+
+/** Explicitly copied per-work report: public identifiers only, no account or viewing data. */
+export function mediaPosterRecordDiagnostics(entry: MediaEntry, state: string) {
+  const poster = normalizeMediaPoster(entry.poster);
+  const validStates = new Set(["missing", "loading", "loaded", "cache-unavailable", "decode-failed"]);
+  return {
+    version: 1,
+    kind: entry.kind,
+    year: entry.year ?? null,
+    traktId: entry.traktId ?? null,
+    imdbId: entry.imdbId && /^tt\d{5,12}$/.test(entry.imdbId) ? entry.imdbId : null,
+    traktUrl: entry.traktUrl && isSafeTraktLink(entry.traktUrl) ? entry.traktUrl : null,
+    hasPosterAddress: Boolean(poster),
+    posterHost: poster ? new URL(poster).hostname : null,
+    state: validStates.has(state) ? state : "unknown",
+  };
+}

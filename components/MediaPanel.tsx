@@ -6,7 +6,7 @@ import { MAX_MEDIA_IMPORT_BYTES, mediaEntrySchema, mergeMediaLibraries, parseMed
 import TraktSync from "./TraktSync";
 import type { TraktController } from "./useTraktAutoSync";
 import { invalidatePosterWorker } from "@/lib/poster-worker-client";
-import { mediaPosterDiagnostics, type MediaPosterDiagnostics } from "@/lib/media-poster-diagnostics";
+import { mediaPosterDiagnostics, mediaPosterRecordDiagnostics, type MediaPosterDiagnostics } from "@/lib/media-poster-diagnostics";
 import { MediaPoster } from "./MediaPoster";
 import { invalidateMediaPoster } from "@/lib/media-posters";
 import { buildMediaWorks, viewingDay, workStatus, type MediaWork } from "@/lib/media-view";
@@ -38,6 +38,8 @@ export default function MediaPanel({ library, onChange, onRemember, trakt }: { l
   const [posterRetrying, setPosterRetrying] = useState(false);
   const [diagnosis, setDiagnosis] = useState<MediaPosterDiagnostics | null>(null);
   const [diagnosisCopy, setDiagnosisCopy] = useState("");
+  const [recordDiagnosis, setRecordDiagnosis] = useState<{ id: string; text: string } | null>(null);
+  const [recordDiagnosisCopy, setRecordDiagnosisCopy] = useState("");
   const fileRef = useRef<HTMLInputElement>(null);
   const dialogRef = useRef<HTMLDialogElement>(null);
   const entries = library.entries;
@@ -109,6 +111,17 @@ export default function MediaPanel({ library, onChange, onRemember, trakt }: { l
     if (!diagnosis) return;
     try { await navigator.clipboard.writeText(JSON.stringify(diagnosis, null, 2)); setDiagnosisCopy("诊断已复制，不含片名、观看记录或密钥。"); }
     catch { setDiagnosisCopy("可展开下方诊断详细信息，选择文字复制。"); }
+  }
+  function checkCurrentPoster() {
+    if (!current) return;
+    const state = dialogRef.current?.querySelector<HTMLElement>("[data-poster-state]")?.dataset.posterState ?? "unknown";
+    setRecordDiagnosis({ id: current.id, text: JSON.stringify(mediaPosterRecordDiagnostics(current, state), null, 2) });
+    setRecordDiagnosisCopy("");
+  }
+  async function copyCurrentDiagnosis() {
+    if (!recordDiagnosis || recordDiagnosis.id !== current?.id) return;
+    try { await navigator.clipboard.writeText(recordDiagnosis.text); setRecordDiagnosisCopy("已复制这部作品的封面诊断。"); }
+    catch { setRecordDiagnosisCopy("请展开下方诊断文字，选择后复制。"); }
   }
   async function retryPosters() {
     if (posterRetrying || trakt.busy) return;
@@ -238,6 +251,13 @@ export default function MediaPanel({ library, onChange, onRemember, trakt }: { l
             {!storedCurrent && <p className="media-muted">已有单集记录，暂缺整部剧的资料；单集的日期与感想仍可展开查看。</p>}
           </div>
         </div>
+        {!current.poster && <p className="media-muted">暂无封面：当前记录没有可用图片地址。{current.imdbId ? "已有 IMDb 编号，可以补查封面。" : "当前记录未包含 IMDb 编号；免费备用图源依赖此编号，部分节目无法通过它获取封面。"} 可在「连接与资料管理」中修复海报，重新补查作品详情。</p>}
+        <details className="media-viewing-records media-poster-diagnostics" onToggle={event => { if (event.currentTarget.open) checkCurrentPoster(); }}>
+          <summary>这部作品的封面诊断</summary>
+          <p className="media-muted">只含作品的公开编号、作品链接与封面状态，不含观看日期、感想或账号密钥。</p>
+          {recordDiagnosis?.id === current.id && <><pre>{recordDiagnosis.text}</pre><button type="button" className="text-button" onClick={() => void copyCurrentDiagnosis()}>复制这部作品的封面诊断</button></>}
+          {recordDiagnosisCopy && recordDiagnosis?.id === current.id && <p role="status">{recordDiagnosisCopy}</p>}
+        </details>
         {currentWork.firstWatchedAt && <div className="media-encounter"><span>在我的生活里</span><p><time dateTime={currentWork.firstWatchedAt}>{dateLabel(currentWork.firstWatchedAt)}</time>{viewingDay(currentWork.firstWatchedAt) !== viewingDay(currentWork.lastWatchedAt!) && <> — <time dateTime={currentWork.lastWatchedAt}>{dateLabel(currentWork.lastWatchedAt!)}</time></>}</p><small>依据已有观看日期</small></div>}
         {current.thought ? <blockquote className="media-thought">{current.thought}</blockquote> : storedCurrent && <p className="media-muted">此刻回看，这个故事留下了什么？可以在「编辑记录与感想」写下自己的答案。</p>}
         <div className="media-actions">

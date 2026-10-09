@@ -52,7 +52,7 @@ export function MediaPoster({ url, title, kind }: { url?: string; title: string;
     <span ref={element} className={`media-title-art media-art-${kind}`} data-poster-failed={failed ? url : undefined} data-poster-state={state} data-poster-route={src?.startsWith("blob:") ? "blob" : src ? "worker" : undefined}>
       {src && !failed ? <img src={src} alt={`${title}海报`} onLoad={() => setLoadedSource(src)} onError={() => { setFailedUrl(url); setFailureStage("decode-failed"); }} /> : <>
         <span>{Array.from(title.trim())[0] ?? "影"}</span>
-        <small>{failed ? "海报加载失败" : kind === "movie" ? "电影" : kind === "show" ? "剧集" : "单集"}</small>
+        <small>{failed ? "海报加载失败" : url ? "封面加载中" : "暂无封面"}</small>
       </>}
     </span>
   );
