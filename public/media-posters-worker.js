@@ -17,9 +17,10 @@ function normalize(value) {
   if (typeof value !== "string" || value.length > 2000 || /[\u0000-\u0020\u007f]/u.test(value)) return;
   if (/^https:\/\/images\.metahub\.space\/poster\/medium\/tt\d{5,12}\/img$/.test(value)) return value;
   try {
-    const url = new URL(value.startsWith("walter-r2.trakt.tv/") ? `https://${value}` : value);
-    if (url.protocol !== "https:" || url.hostname !== "walter-r2.trakt.tv" || url.username || url.password || url.port || url.search || url.hash) return;
+    const url = new URL(/^(?:media|walter-r2)\.trakt\.tv\//.test(value) ? `https://${value}` : value);
+    if (url.protocol !== "https:" || !["media.trakt.tv", "walter-r2.trakt.tv"].includes(url.hostname) || url.username || url.password || url.port || url.search || url.hash) return;
     if (!/^\/images\/[a-z0-9/_-]+\.(?:jpg|jpeg|png)\.webp$/i.test(url.pathname) || url.pathname.includes("//")) return;
+    url.hostname = "media.trakt.tv";
     return url.href;
   } catch { return; }
 }
@@ -27,6 +28,9 @@ function keyFor(url) {
   const key = new URL(endpoint);
   key.searchParams.set("url", url);
   return key.href;
+}
+function legacyUrl(url) {
+  return url.startsWith("https://media.trakt.tv/") ? url.replace("https://media.trakt.tv/", "https://walter-r2.trakt.tv/") : undefined;
 }
 async function withSlot(work) {
   if (active >= 3) await new Promise(resolve => waiting.push(resolve));
@@ -45,7 +49,9 @@ function load(url) {
     current();
     const cache = await caches.open(CACHE_NAME);
     const key = keyFor(url);
-    const cached = await cache.match(key);
+    // Keep the existing cache and reuse artwork stored under the old CDN hostname.
+    const legacy = legacyUrl(url);
+    const cached = await cache.match(key) || (legacy && await cache.match(keyFor(legacy)));
     current();
     if (cached) return cached;
     const controller = new AbortController();
@@ -88,7 +94,7 @@ self.addEventListener("fetch", event => {
 self.addEventListener("message", event => {
   const data = event.data;
   if (!event.source || new URL(event.source.url).origin !== endpoint.origin || !data) return;
-  if (data.type === "version") { event.ports[0]?.postMessage({ version: 2 }); return; }
+  if (data.type === "version") { event.ports[0]?.postMessage({ version: 3 }); return; }
   if (!["clear", "delete"].includes(data.type)) return;
   const url = data.type === "delete" ? normalize(data.url) : undefined;
   if (data.type === "delete" && !url) return;
@@ -104,7 +110,12 @@ self.addEventListener("message", event => {
   }
   const task = serialize(async () => {
     if (data.type === "clear") await caches.delete(CACHE_NAME);
-    else { const cache = await caches.open(CACHE_NAME); await cache.delete(keyFor(url)); }
+    else {
+      const cache = await caches.open(CACHE_NAME);
+      await cache.delete(keyFor(url));
+      const legacy = legacyUrl(url);
+      if (legacy) await cache.delete(keyFor(legacy));
+    }
   });
   event.waitUntil(task.then(() => event.ports[0]?.postMessage({ ok: true }), () => event.ports[0]?.postMessage({ ok: false })));
 });

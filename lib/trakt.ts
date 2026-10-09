@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { MAX_MEDIA_IMPORT_BYTES, imdbPoster, isLegacyTraktPoster, mediaLibrarySchema, normalizeMediaPoster, traktMediaId, type MediaEntry, type MediaLibrary } from "./media";
+import { MAX_MEDIA_IMPORT_BYTES, correctedTraktPoster, imdbPoster, isLegacyTraktPoster, mediaLibrarySchema, nativeTraktPoster, normalizeMediaPoster, traktMediaId, type MediaEntry, type MediaLibrary } from "./media";
 
 export const TRAKT_AUTH_CONTEXT_KEY = "life-workbench:trakt-pkce";
 // This is our local sign-in window, not a documented Trakt authorization-code lifetime.
@@ -287,6 +287,10 @@ type TitleMetadata = z.infer<typeof titleMetadata>;
 function traktPoster(images: unknown): string | undefined {
   if (!images || typeof images !== "object" || !("poster" in images) || !Array.isArray(images.poster)) return;
   for (const value of images.poster.slice(0, 10)) {
+    const url = nativeTraktPoster(value);
+    if (url) return url;
+  }
+  for (const value of images.poster.slice(0, 10)) {
     const url = normalizeMediaPoster(value);
     if (url) return url;
   }
@@ -310,14 +314,18 @@ async function hydratePosters(
   };
   const pending: MediaEntry[] = [];
   for (const entry of titles) {
-    const generated = imdbPoster(entry.imdbId);
-    if (generated && (!entry.poster || isLegacyTraktPoster(entry.poster))) entry.poster = generated;
+    const corrected = correctedTraktPoster(entry);
+    if (corrected) entry.poster = corrected;
     const known = options.knownPosters?.get(entry.id);
+    const knownNative = nativeTraktPoster(known);
+    if (knownNative && !nativeTraktPoster(entry.poster)) entry.poster = knownNative;
     if ((!entry.poster || isLegacyTraktPoster(entry.poster)) && known) {
-      const normalized = normalizeMediaPoster(known);
+      const normalized = nativeTraktPoster(known) ?? normalizeMediaPoster(known);
       if (normalized) entry.poster = normalized;
       else rejected.add(entry.id);
     }
+    const generated = imdbPoster(entry.imdbId);
+    if (!entry.poster && generated) entry.poster = generated;
     if (entry.poster && !isLegacyTraktPoster(entry.poster)) { progress.checked += 1; progress.found += 1; progress.deferred -= 1; }
     else if (entry.traktId !== undefined) pending.push(entry);
   }
@@ -340,7 +348,7 @@ async function hydratePosters(
         if (summary.success && summary.data.ids.trakt === entry.traktId) {
           if (hasRejectedPoster(summary.data.images)) rejected.add(entry.id);
           if (summary.data.ids.imdb) entry.imdbId = summary.data.ids.imdb;
-          const poster = imdbPoster(entry.imdbId) ?? traktPoster(summary.data.images);
+          const poster = traktPoster(summary.data.images) ?? imdbPoster(entry.imdbId);
           if (poster) entry.poster = poster;
         }
         if (entry.poster && !isLegacyTraktPoster(entry.poster)) progress.found += 1;
@@ -457,7 +465,7 @@ export async function fetchTraktLibrary(
     const previous = entries.get(id);
     if (hasRejectedPoster(metadata.images)) rejectedPosters.add(id);
     const imdbId = metadata.ids.imdb ?? previous?.imdbId;
-    const poster = imdbPoster(imdbId) ?? traktPoster(metadata.images) ?? previous?.poster;
+    const poster = traktPoster(metadata.images) ?? correctedTraktPoster({ kind, traktId: metadata.ids.trakt, poster: previous?.poster }) ?? imdbPoster(imdbId) ?? previous?.poster;
     const record: MediaEntry = {
       id, kind, title: metadata.title, ...(metadata.year == null ? {} : { year: metadata.year }),
       genres: metadata.genres ?? previous?.genres ?? [], status: previous?.status ?? "unclassified",

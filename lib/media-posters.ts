@@ -84,6 +84,10 @@ function validBlob(blob: Blob): boolean {
   return IMAGE_TYPES.has(blob.type.toLowerCase()) && blob.size > 0 && blob.size <= MAX_POSTER_BYTES;
 }
 
+function legacyCacheUrl(url: string): string | undefined {
+  return url.startsWith("https://media.trakt.tv/") ? url.replace("https://media.trakt.tv/", "https://walter-r2.trakt.tv/") : undefined;
+}
+
 export function createMediaPosterLoader(options: {
   cache?: MediaPosterCache;
   timeoutMs?: number;
@@ -145,7 +149,8 @@ export function createMediaPosterLoader(options: {
   }
   function load(url: string): Promise<Blob> {
     if (clearing) return Promise.reject(new Error("海报缓存正在清空"));
-    const safeUrl = normalizeMediaPoster(url);
+    const normalized = normalizeMediaPoster(url);
+    const safeUrl = normalized?.replace("https://walter-r2.trakt.tv/", "https://media.trakt.tv/");
     if (!safeUrl) return Promise.reject(new Error("海报地址不正确"));
     const remembered = memory.get(safeUrl);
     if (remembered) { remember(safeUrl, remembered); return Promise.resolve(remembered); }
@@ -159,6 +164,11 @@ export function createMediaPosterLoader(options: {
       ensureCurrent();
       let blob: Blob | undefined;
       try { blob = await cache.get(safeUrl); } catch { /* Storage is optional. */ }
+      // Reuse public artwork cached before the CDN hostname changed.
+      const legacy = legacyCacheUrl(safeUrl);
+      if ((!blob || !validBlob(blob)) && legacy) {
+        try { blob = await cache.get(legacy); } catch { /* Storage is optional. */ }
+      }
       ensureCurrent();
       if (!blob || !validBlob(blob)) {
         blob = await download(safeUrl);
@@ -174,11 +184,14 @@ export function createMediaPosterLoader(options: {
     return request;
   }
   async function invalidate(url: string): Promise<void> {
-    const safeUrl = normalizeMediaPoster(url);
+    const normalized = normalizeMediaPoster(url);
+    const safeUrl = normalized?.replace("https://walter-r2.trakt.tv/", "https://media.trakt.tv/");
     if (!safeUrl) return;
     try { await inflight.get(safeUrl); } catch { /* Failed downloads can be retried. */ }
     memory.delete(safeUrl);
     try { await cache.delete(safeUrl); } catch { /* Storage is optional. */ }
+    const legacy = legacyCacheUrl(safeUrl);
+    if (legacy) try { await cache.delete(legacy); } catch { /* Storage is optional. */ }
   }
   function clear(): Promise<void> {
     if (clearing) return clearing;

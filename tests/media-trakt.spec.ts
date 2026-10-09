@@ -12,9 +12,9 @@ const CLIENT_ID = "test-only-public-trakt-client-id";
 const AUTHORIZATION_CODE = "test-only-authorization-code";
 const ACCESS_TOKEN = "test-only-access-token";
 const REFRESH_TOKEN = "test-only-refresh-token";
-const FAILED_POSTER_URL = "https://walter-r2.trakt.tv/images/movies/000/012/602/posters/thumb/failed.jpg.webp";
-const LEGACY_POSTER_URL = "https://walter-r2.trakt.tv/images/movies/000/012/601/posters/thumb/e0d9dd35c5.jpg.webp";
-const PUBLIC_POSTER_URL = "https://images.metahub.space/poster/medium/tt1375666/img";
+const FAILED_POSTER_URL = "https://media.trakt.tv/images/movies/000/012/602/posters/thumb/failed.jpg.webp";
+const NATIVE_POSTER_URL = "https://media.trakt.tv/images/movies/000/012/601/posters/thumb/e0d9dd35c5.jpg.webp";
+const PUBLIC_POSTER_URL = NATIVE_POSTER_URL;
 const MOCK_WEBP = Buffer.from("UklGRi4AAABXRUJQVlA4ICIAAABQAQCdASoCAAMAAUAmJQBOgC6gAP7wxASMNGvr1093/cAA", "base64");
 const SUMMARY_IMDB_IDS: Record<string, string> = {
   "/movies/1": "tt1375666", "/movies/3": "tt0816692", "/movies/8": "tt0133093",
@@ -22,7 +22,7 @@ const SUMMARY_IMDB_IDS: Record<string, string> = {
 };
 const PUBLIC_SUMMARIES = new Set(Object.keys(SUMMARY_IMDB_IDS));
 const METAHUB_POSTER_URLS = new Set(Object.values(SUMMARY_IMDB_IDS).map(id => `https://images.metahub.space/poster/medium/${id}/img`));
-const isMockPosterUrl = (url: URL) => url.origin === "https://walter-r2.trakt.tv" || METAHUB_POSTER_URLS.has(url.href);
+const isMockPosterUrl = (url: URL) => ["https://walter-r2.trakt.tv", "https://media.trakt.tv"].includes(url.origin) || METAHUB_POSTER_URLS.has(url.href);
 const ENDPOINTS = [
   "/users/me/history/movies", "/users/me/history/episodes", "/users/me/ratings/movies",
   "/users/me/ratings/shows", "/users/me/watchlist/movies", "/users/me/watchlist/shows",
@@ -58,13 +58,13 @@ const test = base.extend<{ audit: void }>({
     page.on("console", message => {
       if (message.type() !== "error") return;
       // The failure case deliberately returns HTTP 500 from a mocked data endpoint.
-      if (["https://api.trakt.tv/", "https://walter-r2.trakt.tv/"].some(origin => message.location().url.startsWith(origin)) && /Failed to load resource/.test(message.text())) return;
+      if (["https://api.trakt.tv/", "https://walter-r2.trakt.tv/", "https://media.trakt.tv/"].some(origin => message.location().url.startsWith(origin)) && /Failed to load resource/.test(message.text())) return;
       if (intentionalPosterFallback(message.location().url) && /Failed to load resource.*(?:net::ERR_FAILED|status of 500)/.test(message.text())) return;
       pageErrors.push(message.text());
     });
     page.on("response", response => {
       if (METAHUB_POSTER_URLS.has(response.url()) && response.status() >= 400) assetFailures.push(`${response.status()} ${response.url()}`);
-      if (new URL(response.url()).origin === "https://walter-r2.trakt.tv" && response.status() >= 400) rejectedPosters.add(response.url());
+      if (["https://walter-r2.trakt.tv", "https://media.trakt.tv"].includes(new URL(response.url()).origin) && response.status() >= 400) rejectedPosters.add(response.url());
       if ([APP_ORIGIN, LOCAL_ORIGIN].includes(new URL(response.url()).origin) && response.status() >= 400 && !intentionalPosterFallback(response.url())) assetFailures.push(`${response.status()} ${response.url()}`);
     });
     page.on("requestfailed", request => {
@@ -155,6 +155,32 @@ async function expectNoTasks(page: Page) {
   expect(saved?.sources ?? []).toEqual([]);
 }
 
+test("打开旧片单自动补齐小约翰官方封面，不依赖IMDb或账号授权且保留人生资料", async ({ page, context }) => {
+  const poster = "https://media.trakt.tv/images/shows/000/312/285/posters/thumb/69c487addb.jpg.webp";
+  let downloads = 0;
+  await context.route(poster, async route => {
+    downloads++;
+    await route.fulfill({ contentType: "image/webp", body: MOCK_WEBP });
+  });
+  const seed = originalState();
+  seed.life.media.entries = [{ ...seed.life.media.entries[0], id: "trakt:show:312285", traktId: 312285, kind: "show", title: "小约翰可汗-充电系列", year: 2025 }];
+  await openMedia(page, { seed });
+  await expect.poll(async () => (await persisted(page))?.life.media.entries[0]?.poster).toBe(poster);
+  const saved = await persisted(page);
+  expect(saved?.life.media.entries[0]).toEqual({ ...seed.life.media.entries[0], poster });
+  expect(saved?.life.reading).toEqual(seed.life.reading);
+  expect(saved?.life.thoughts).toEqual(seed.life.thoughts);
+  expect(saved?.life.board).toEqual(seed.life.board);
+  expect(await connectionRecord(page)).toBeNull();
+  const image = page.locator(".media-title-art img");
+  await expect.poll(() => image.evaluate(node => (node as HTMLImageElement).naturalWidth)).toBe(2);
+  expect(downloads).toBe(1);
+  await page.reload();
+  await selectView(page, "影音");
+  await expect.poll(() => image.evaluate(node => (node as HTMLImageElement).naturalWidth)).toBe(2);
+  expect(downloads).toBe(1);
+});
+
 test("缺图作品区分暂无封面，单部诊断只复制公开编号且不改原始资料", async ({ page, context }) => {
   await context.grantPermissions(["clipboard-read", "clipboard-write"]);
   const seed = originalState();
@@ -164,7 +190,7 @@ test("缺图作品区分暂无封面，单部诊断只复制公开编号且不�
   await expect(page.locator(".media-title-art")).toHaveAttribute("data-poster-state", "missing");
   await expect(page.locator(".media-title-art")).toContainText("暂无封面");
   const detail = await openMediaDetail(page, "Glad To Know You");
-  await expect(detail).toContainText("当前记录未包含 IMDb 编号");
+  await expect(detail).toContainText("从 Trakt 作品详情补查官方封面");
   await detail.getByText("这部作品的封面诊断", { exact: true }).click();
   await detail.getByRole("button", { name: "复制这部作品的封面诊断", exact: true }).click();
   const report = await page.evaluate(() => navigator.clipboard.readText());
@@ -313,7 +339,7 @@ async function mockTrakt(page: Page) {
       if (result.summaryGate) await result.summaryGate;
       const id = Number(url.pathname.split("/").at(-1));
       await route.fulfill({ status: 200, headers: cors, contentType: "application/json", body: JSON.stringify({
-        title: `Original summary ${id}`, year: 2025, ids: { trakt: id, imdb: SUMMARY_IMDB_IDS[url.pathname] }, images: { poster: [LEGACY_POSTER_URL] },
+        title: `Original summary ${id}`, year: 2025, ids: { trakt: id, imdb: SUMMARY_IMDB_IDS[url.pathname] }, images: { poster: [NATIVE_POSTER_URL] },
       }) });
       return;
     }
@@ -354,7 +380,6 @@ async function authorize(page: Page) {
 test("旧片单凭公开 Client ID 修复海报，补图期间的新评分感想保留，下次打开自动补图且诊断不含个人资料", async ({ page, context }) => {
   test.setTimeout(60_000);
   const before = originalState();
-  before.life.media.entries[0].poster = LEGACY_POSTER_URL;
   const trakt = await mockTrakt(page);
   await openMedia(page, { https: true, seed: before });
   let release!: () => void;
@@ -765,7 +790,7 @@ test("多季单集投影为一部剧，上海观看日去重，折叠记录可�
 
 test("海报从官方来源缓存为Blob，同一图片不重复下载，刷新复用缓存，失败可重试且备份不含图片内容", async ({ page, context }) => {
   const before = originalState();
-  const poster = LEGACY_POSTER_URL;
+  const poster = NATIVE_POSTER_URL;
   const retryPoster = FAILED_POSTER_URL;
   before.life.media.entries[0].poster = poster;
   before.life.media.entries[1].poster = poster;
@@ -773,7 +798,7 @@ test("海报从官方来源缓存为Blob，同一图片不重复下载，刷新�
   const image = Buffer.from("UklGRi4AAABXRUJQVlA4ICIAAABQAQCdASoCAAMAAUAmJQBOgC6gAP7wxASMNGvr1093/cAA", "base64");
   const downloads: Record<string, number> = {};
   let allowRetry = false;
-  await context.route("https://walter-r2.trakt.tv/**", async route => {
+  await context.route("https://media.trakt.tv/**", async route => {
     const request = route.request();
     const url = request.url();
     expect(request.resourceType()).toBe("fetch");

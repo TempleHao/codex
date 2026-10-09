@@ -4,16 +4,14 @@ import { readFile, writeFile } from "node:fs/promises";
 import { chromium } from "@playwright/test";
 
 // One fixed, public title. This check never opens a user's account or reads credentials.
-const source = "https://images.metahub.space/poster/medium/tt1375666/img";
+const source = "https://media.trakt.tv/images/shows/000/312/285/posters/thumb/69c487addb.jpg.webp";
 const base = "http://127.0.0.1:3200/codex/";
 const binary = [process.env.CHROMIUM_PATH, "/usr/bin/google-chrome", "/usr/bin/chromium"].find(path => path && existsSync(path));
 if (!binary) throw new Error("A trusted installed Chromium or Google Chrome is required.");
 const workerFile = "preview-out/media-posters-worker.js";
 const currentWorker = await readFile(workerFile, "utf8");
-const legacyWorker = currentWorker
-  .replace(/^  if \(\/\^https:.*images.*metahub.*return value;\n/m, "")
-  .replace(/^  if \(data\.type === "version"\).*\n/m, "");
-if (legacyWorker === currentWorker || legacyWorker.includes("metahub") || legacyWorker.includes('data.type === "version"')) throw new Error("Legacy worker fixture was not isolated correctly.");
+// The previous deployment acknowledged version 2 and rejected the native media host.
+const legacyWorker = 'self.addEventListener("install", e => e.waitUntil(self.skipWaiting())); self.addEventListener("activate", e => e.waitUntil(self.clients.claim())); self.addEventListener("message", e => { if (e.data?.type === "version") e.ports[0]?.postMessage({ version: 2 }); });';
 await writeFile(workerFile, legacyWorker);
 const server = spawn(process.execPath, ["scripts/serve-preview.mjs"], { stdio: ["ignore", "ignore", "pipe"], env: { ...process.env, LIFE_PREVIEW_PORT: "3200" } });
 let serverError = "";
@@ -53,10 +51,11 @@ try {
     const life = {
       reading: { version: 1, books: [], highlights: [], stats: null, syncedAt: null, source: "manual" },
       thoughts: [], board: { threads: [], observations: [], reviews: [] },
-      media: { version: 1, source: "manual", syncedAt: null, entries: [{ id: "manual:public-network-probe", title: "公开海报加载检查", kind: "movie", status: "wanted", genres: [], history: [], imdbId: "tt1375666", poster }] },
+      // Start with a saved show lacking both IMDb and artwork: opening the app patches only the poster.
+      media: { version: 1, source: "manual", syncedAt: null, entries: [{ id: "trakt:show:312285", traktId: 312285, title: "小约翰可汗-充电系列", kind: "show", status: "wanted", genres: [], history: [] }] },
     };
     localStorage.setItem("life-workbench-preview-v1", JSON.stringify({ version: 1, tasks: [], sources: [], batches: {}, life }));
-  }, source);
+  });
   const openMedia = async () => {
     await page.reload();
     await page.getByRole("button", { name: "导出备份", exact: true }).waitFor();
@@ -78,11 +77,13 @@ try {
   await openMedia();
   const result = await page.locator(".media-title .media-title-art img").first().evaluate(image => ({ width: image.naturalWidth, height: image.naturalHeight, route: image.src.startsWith("blob:") ? "blob" : "worker" }));
   const firstDownloads = workerDownloads;
+  const saved = await page.evaluate(() => JSON.parse(localStorage.getItem("life-workbench-preview-v1")).life.media.entries[0]);
+  if (saved.poster !== source || saved.imdbId) throw new Error("The native correction did not restore the saved show without IMDb.");
   await openMedia();
   if (workerDownloads !== firstDownloads) throw new Error("The cached public poster was downloaded again after reload.");
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth > innerWidth);
   if (overflow || errors.length) throw new Error("Mobile overflow or unhandled browser error.");
-  console.log("::notice title=Public poster browser::" + JSON.stringify({ ...result, workerDownloads, corsAttempts, upgradedLegacyWorker: true, cacheReused: true, mobileOverflow: false, pageErrors: 0 }));
+  console.log("::notice title=Public poster browser::" + JSON.stringify({ ...result, sourceHost: "media.trakt.tv", noImdbNeeded: true, workerDownloads, corsAttempts, upgradedLegacyWorker: true, cacheReused: true, mobileOverflow: false, pageErrors: 0 }));
 } catch (error) {
   console.error("::error title=Public poster browser::" + JSON.stringify({ error: error.message.slice(0, 500) }));
   process.exitCode = 1;

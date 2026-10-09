@@ -38,16 +38,36 @@ export function isLegacyTraktPoster(value: unknown): boolean {
   return poster !== undefined && new URL(poster).hostname === "walter-r2.trakt.tv";
 }
 
-/** Preserve imported Trakt URLs and allow only the documented IMDb poster endpoint. */
+/** Preserve old backups and accept official Trakt artwork plus the fixed IMDb fallback. */
 export function normalizeMediaPoster(value: unknown): string | undefined {
   if (typeof value !== "string" || value.length > 2_000 || /[\u0000-\u0020\u007f]/u.test(value)) return;
   if (/^https:\/\/images\.metahub\.space\/poster\/medium\/tt\d{5,12}\/img$/.test(value)) return value;
   try {
-    const url = new URL(value.startsWith("walter-r2.trakt.tv/") ? `https://${value}` : value);
-    if (url.protocol !== "https:" || url.hostname !== "walter-r2.trakt.tv" || url.username || url.password || url.port || url.search || url.hash) return;
+    const url = new URL(/^(?:media|walter-r2)\.trakt\.tv\//.test(value) ? `https://${value}` : value);
+    if (url.protocol !== "https:" || !["media.trakt.tv", "walter-r2.trakt.tv"].includes(url.hostname) || url.username || url.password || url.port || url.search || url.hash) return;
     if (!/^\/images\/[a-z0-9/_-]+\.(?:jpg|jpeg|png)\.webp$/i.test(url.pathname) || url.pathname.includes("//")) return;
     return url.href;
   } catch { return; }
+}
+
+/** The current Trakt CDN serves the same artwork paths as the retired Walter host. */
+export function nativeTraktPoster(value: unknown): string | undefined {
+  const normalized = normalizeMediaPoster(value);
+  if (!normalized) return;
+  const url = new URL(normalized);
+  if (!["media.trakt.tv", "walter-r2.trakt.tv"].includes(url.hostname)) return;
+  url.hostname = "media.trakt.tv";
+  return url.href;
+}
+
+/** An explicitly supplied public correction, bound to the exact Trakt entity, never its title. */
+export function correctedTraktPoster(entry: Pick<MediaEntry, "kind" | "traktId" | "poster">): string | undefined {
+  const native = nativeTraktPoster(entry.poster);
+  if (native) return native;
+  // User supplied this official cover for 小约翰可汗-充电系列, show 312285.
+  if (entry.kind === "show" && entry.traktId === 312285) {
+    return "https://media.trakt.tv/images/shows/000/312/285/posters/thumb/69c487addb.jpg.webp";
+  }
 }
 
 export const mediaHistorySchema = z.object({

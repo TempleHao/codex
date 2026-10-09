@@ -5,7 +5,7 @@ import { APP_BASE_PATH } from "@/lib/client";
 import { clearTraktAuthorizationContext, completeTraktSessionAuthorization, createTraktAuthorization, fetchTraktLibrary, fetchTraktArtwork, saveTraktAuthorizationContext, TraktError, type TraktSession, type TraktArtworkProgress } from "@/lib/trakt";
 import { traktConnection } from "@/lib/trakt-connection";
 import type { MediaLibrary } from "@/lib/media";
-import { isLegacyTraktPoster } from "@/lib/media";
+import { correctedTraktPoster, isLegacyTraktPoster } from "@/lib/media";
 
 const PUBLIC_CLIENT_ID_KEY = "life-workbench:trakt-client-id";
 export function useTraktAutoSync({ ready, library, onImport, onArtwork }: { ready: boolean; library: MediaLibrary; onImport: (library: MediaLibrary) => Promise<void>; onArtwork: (posters: ReadonlyMap<string, string>) => Promise<void> }) {
@@ -130,6 +130,13 @@ export function useTraktAutoSync({ ready, library, onImport, onArtwork }: { read
       } else {
         void (async () => {
           try {
+            // Public CDN corrections require neither authorization nor another API request.
+            const corrected = new Map(media.current.entries.flatMap(entry => {
+              const poster = correctedTraktPoster(entry);
+              return poster && poster !== entry.poster ? [[entry.id, poster] as const] : [];
+            }));
+            if (corrected.size) await artworkImporter.current(corrected);
+            if (disposed || !mounted.current) return;
             const record = await traktConnection.read();
             if (disposed || !mounted.current) return;
             if (!record) {

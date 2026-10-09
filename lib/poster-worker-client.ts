@@ -30,7 +30,7 @@ function ensureWorker(): Promise<ServiceWorker> {
       const channel = new MessageChannel();
       probes.set(worker, channel.port1);
       channel.port1.onmessage = event => {
-        if (event.data?.version !== 2 || ownedController() !== worker) return;
+        if (event.data?.version !== 3 || ownedController() !== worker) return;
         cleanup(); resolve(worker);
       };
       try { worker.postMessage({ type: "version" }, [channel.port2]); }
@@ -54,7 +54,7 @@ function ensureWorker(): Promise<ServiceWorker> {
 }
 
 export async function loadPosterWorkerSource(url: string): Promise<string> {
-  const safe = normalizeMediaPoster(url);
+  const safe = normalizeMediaPoster(url)?.replace("https://walter-r2.trakt.tv/", "https://media.trakt.tv/");
   if (!safe) throw new Error("海报地址不正确");
   await ensureWorker();
   const source = new URL(`${scope}media-poster-cache`, location.origin);

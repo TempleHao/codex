@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { emptyMediaLibrary, imdbPoster, isLegacyTraktPoster, mediaEntrySchema, mediaLibrarySchema, mergeMediaLibraries, normalizeMediaPoster, parseMediaImport, traktMediaId } from "./media";
+import { correctedTraktPoster, emptyMediaLibrary, imdbPoster, isLegacyTraktPoster, mediaEntrySchema, mediaLibrarySchema, mergeMediaLibraries, nativeTraktPoster, normalizeMediaPoster, parseMediaImport, traktMediaId } from "./media";
 import type { MediaEntry, MediaLibrary } from "./media";
 
 const movie = (overrides: Partial<MediaEntry> = {}): MediaEntry => ({
@@ -18,6 +18,20 @@ const library = (entries: MediaEntry[] = [movie()], overrides: Partial<MediaLibr
 const watched = (id: string, watchedAt = "2026-10-07T12:00:00+08:00") => ({ id, watchedAt });
 
 describe("portable media imports", () => {
+  it("accepts native Trakt covers without IMDb, preserving legacy backups and binding corrections by entity", () => {
+    const poster = "https://media.trakt.tv/images/shows/000/312/285/posters/thumb/69c487addb.jpg.webp";
+    expect(parseMediaImport(library([show({ poster })])).entries[0].poster).toBe(poster);
+    expect(normalizeMediaPoster(poster.slice(8))).toBe(poster);
+    const legacy = poster.replace("media.trakt.tv", "walter-r2.trakt.tv");
+    expect(normalizeMediaPoster(legacy)).toBe(legacy);
+    expect(nativeTraktPoster(legacy)).toBe(poster);
+    expect(correctedTraktPoster({ kind: "show", traktId: 312285 })).toBe(poster);
+    expect(correctedTraktPoster({ kind: "movie", traktId: 312285 })).toBeUndefined();
+    expect(correctedTraktPoster({ kind: "show", traktId: 1 })).toBeUndefined();
+    for (const invalid of [poster.replace("https:", "http:"), poster + "?key=x", poster + "#x", poster.replace("https://", "https://user@"), poster.replace("trakt.tv", "trakt.tv.evil.test"), poster.replace("/images/", "/private/")]) {
+      expect(normalizeMediaPoster(invalid)).toBeUndefined();
+    }
+  });
   it("accepts only the exact public IMDb poster endpoint and preserves legacy import compatibility", () => {
     const poster = "https://images.metahub.space/poster/medium/tt1375666/img";
     expect(imdbPoster("tt1375666")).toBe(poster);

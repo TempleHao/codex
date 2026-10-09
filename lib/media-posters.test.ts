@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { createMediaPosterLoader, MAX_POSTER_BYTES, type MediaPosterCache } from "./media-posters";
 
 const url = "https://walter-r2.trakt.tv/images/movies/000/001/posters/thumb/a.jpg.webp";
+const nativeUrl = "https://media.trakt.tv/images/shows/000/312/285/posters/thumb/69c487addb.jpg.webp";
 const image = () => new Response(new Uint8Array([82, 73, 70, 70]), { headers: { "content-type": "image/webp" } });
 function memoryCache(): MediaPosterCache {
   const entries = new Map<string, Blob>();
@@ -15,6 +16,31 @@ function memoryCache(): MediaPosterCache {
 afterEach(() => { vi.unstubAllGlobals(); vi.useRealTimers(); });
 
 describe("public browser poster cache", () => {
+  it("downloads native Trakt artwork and shares the cache with its legacy hostname", async () => {
+    const cache = memoryCache();
+    const fetch = vi.fn(async (_input: string, _options?: RequestInit) => image());
+    vi.stubGlobal("fetch", fetch);
+    const loader = createMediaPosterLoader({ cache });
+    const blob = await loader.load(nativeUrl.replace("https://", ""));
+    expect(await loader.load(nativeUrl.replace("media.trakt.tv", "walter-r2.trakt.tv"))).toBe(blob);
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(fetch.mock.calls[0][0]).toBe(nativeUrl);
+    expect(cache.set).toHaveBeenCalledWith(nativeUrl, blob);
+  });
+  it("reuses artwork cached under the old CDN without downloading it", async () => {
+    const cache = memoryCache();
+    const legacy = nativeUrl.replace("media.trakt.tv", "walter-r2.trakt.tv");
+    const blob = new Blob(["public artwork"], { type: "image/webp" });
+    await cache.set(legacy, blob);
+    const fetch = vi.fn();
+    vi.stubGlobal("fetch", fetch);
+    const loader = createMediaPosterLoader({ cache });
+    expect(await loader.load(nativeUrl)).toBe(blob);
+    expect(fetch).not.toHaveBeenCalled();
+    await loader.invalidate(nativeUrl);
+    expect(cache.delete).toHaveBeenCalledWith(nativeUrl);
+    expect(cache.delete).toHaveBeenCalledWith(legacy);
+  });
   it.each(["image/jpeg", "image/png"])("caches the public fallback in its actual %s format", async contentType => {
     const cache = memoryCache();
     vi.stubGlobal("fetch", vi.fn(async () => new Response(new Uint8Array([1, 2, 3]), { headers: { "content-type": contentType } })));
@@ -30,7 +56,7 @@ describe("public browser poster cache", () => {
     const fetch = vi.fn();
     vi.stubGlobal("fetch", fetch);
     const loader = createMediaPosterLoader({ cache });
-    for (const invalid of ["https://evil.example/a.webp", url.replace("https:", "http:"), `${url}?token=secret`, url.replace(".webp", ".jpg")]) {
+    for (const invalid of ["https://evil.example/a.webp", url.replace("https:", "http:"), `${url}?token=secret`, url.replace(".webp", ".jpg"), `${nativeUrl}?token=secret`, nativeUrl.replace("media.trakt.tv", "media.trakt.tv.evil.example"), nativeUrl.replace("/images/", "/account/")]) {
       await expect(loader.load(invalid)).rejects.toThrow("地址");
     }
     expect(fetch).not.toHaveBeenCalled();
@@ -158,7 +184,7 @@ describe("public browser poster cache", () => {
     expect((await settled).every(result => result.status === "rejected")).toBe(true);
     expect(signals.every(signal => signal.aborted)).toBe(true);
     expect(fetch).toHaveBeenCalledTimes(3);
-    expect(cache.get).toHaveBeenCalledTimes(3);
+    expect(cache.get).toHaveBeenCalledTimes(6);
     expect(cache.set).not.toHaveBeenCalled();
     expect(cache.clear).toHaveBeenCalledTimes(1);
     fetch.mockImplementationOnce(async () => image());

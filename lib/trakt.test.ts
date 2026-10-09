@@ -45,6 +45,7 @@ const wantedMovie = (id = 3) => ({ id: 400 + id, type: "movie", listed_at: watch
 const wantedShow = (id = 5) => ({ id: 500 + id, type: "show", listed_at: watchedAt, show: show(id) });
 const POSTER_PATH = "walter-r2.trakt.tv/images/movies/000/012/601/posters/thumb/e0d9dd35c5.jpg.webp";
 const POSTER = `https://${POSTER_PATH}`;
+const NATIVE_POSTER = POSTER.replace("walter-r2.trakt.tv", "media.trakt.tv");
 const IMDB = "tt1375666";
 const METAHUB = `https://images.metahub.space/poster/medium/${IMDB}/img`;
 function libraryFetch(datasets: Record<string, unknown[]> = {}, limit = 250, summaries: Record<string, unknown> = {}) {
@@ -82,13 +83,13 @@ describe("Trakt current summary artwork", () => {
       history: [{ id: `saved:${index + 1}`, watchedAt }],
     })),
   });
-  it("uses embedded IMDb IDs without requesting summaries", async () => {
+  it("prefers embedded native Trakt artwork over IMDb without requesting summaries", async () => {
     const fetcher = libraryFetch({ "/users/me/watchlist/movies": [{
       ...wantedMovie(1), movie: movie(1, { ids: { trakt: 1, imdb: IMDB }, images: { poster: [POSTER_PATH] } }),
     }] });
     const result = await fetchTraktLibrary(TOKEN, CLIENT, { fetch: fetcher, now: NOW });
     expect(fetcher).toHaveBeenCalledTimes(6);
-    expect(result.entries[0]).toMatchObject({ poster: METAHUB, imdbId: IMDB, status: "wanted" });
+    expect(result.entries[0]).toMatchObject({ poster: NATIVE_POSTER, imdbId: IMDB, status: "wanted" });
   });
 
   it("migrates saved legacy posters with IMDb and repairs legacy episode artwork from the parent", async () => {
@@ -100,18 +101,36 @@ describe("Trakt current summary artwork", () => {
     const fetcher = vi.fn<typeof fetch>();
     const result = await fetchTraktArtwork(original, CLIENT, undefined, { fetch: fetcher });
     expect(fetcher).not.toHaveBeenCalled();
-    expect(result.entries.map(entry => entry.poster)).toEqual([METAHUB, "https://images.metahub.space/poster/medium/tt0903747/img", "https://images.metahub.space/poster/medium/tt0903747/img"]);
-    expect(result.entries[0]).toEqual({ ...original.entries[0], poster: METAHUB });
+    expect(result.entries.map(entry => entry.poster)).toEqual([NATIVE_POSTER, NATIVE_POSTER, NATIVE_POSTER]);
+    expect(result.entries[0]).toEqual({ ...original.entries[0], poster: NATIVE_POSTER });
     expect(original.entries[0].poster).toBe(POSTER);
   });
 
-  it("does not let saved legacy posters hide the summary needed to recover an IMDb ID", async () => {
+  it("repairs legacy CDN paths without IMDb or unnecessary summaries", async () => {
     const original = library();
     original.entries[0].poster = POSTER;
     const fetcher = vi.fn<typeof fetch>().mockResolvedValue(new Response(JSON.stringify({ ids: { trakt: 1, imdb: IMDB } })));
     const result = await fetchTraktArtwork(original, CLIENT, undefined, { fetch: fetcher, knownPosters: new Map([[original.entries[0].id, POSTER]]) });
+    expect(fetcher).not.toHaveBeenCalled();
+    expect(result.entries[0]).toEqual({ ...original.entries[0], poster: NATIVE_POSTER });
+  });
+
+  it("hydrates native Trakt artwork when a show has no IMDb and prefers native addresses within the API array", async () => {
+    const original: MediaLibrary = { ...library(), entries: [{ ...library().entries[0], id: "trakt:show:7", traktId: 7, kind: "show" }] };
+    const native = "https://media.trakt.tv/images/shows/000/000/007/posters/thumb/a.jpg.webp";
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(new Response(JSON.stringify({ ids: { trakt: 7, imdb: null }, images: { poster: [METAHUB, native] } })));
+    const result = await fetchTraktArtwork(original, CLIENT, undefined, { fetch: fetcher });
+    expect(result.entries[0]).toEqual({ ...original.entries[0], poster: native });
     expect(fetcher).toHaveBeenCalledOnce();
-    expect(result.entries[0]).toEqual({ ...original.entries[0], imdbId: IMDB, poster: METAHUB });
+    expect(original.entries[0]).not.toHaveProperty("poster");
+  });
+
+  it("applies the user-supplied exact show correction without IMDb, API calls or title matching", async () => {
+    const original: MediaLibrary = { ...library(), entries: [{ ...library().entries[0], id: "trakt:show:312285", traktId: 312285, kind: "show", title: "Title may change" }] };
+    const fetcher = vi.fn<typeof fetch>();
+    const result = await fetchTraktArtwork(original, CLIENT, undefined, { fetch: fetcher });
+    expect(result.entries[0]).toEqual({ ...original.entries[0], poster: "https://media.trakt.tv/images/shows/000/312/285/posters/thumb/69c487addb.jpg.webp" });
+    expect(fetcher).not.toHaveBeenCalled();
   });
 
   it("ignores malformed optional IMDb IDs without losing account history or generating unsafe poster URLs", async () => {
@@ -136,10 +155,10 @@ describe("Trakt current summary artwork", () => {
     });
     const progress: TraktArtworkProgress[] = [];
     const result = await fetchTraktLibrary(TOKEN, CLIENT, { fetch: fetcher, now: NOW, onArtworkProgress: value => progress.push(value) });
-    expect(result.entries.find(entry => entry.kind === "movie")).toMatchObject({ title: "Original movie 1", rating: 8, poster: METAHUB, imdbId: IMDB, history: [
+    expect(result.entries.find(entry => entry.kind === "movie")).toMatchObject({ title: "Original movie 1", rating: 8, poster: NATIVE_POSTER, imdbId: IMDB, history: [
       { id: "trakt:history:101", watchedAt }, { id: "trakt:history:102", watchedAt },
     ] });
-    expect(result.entries.find(entry => entry.kind === "episode")?.poster).toBe(METAHUB);
+    expect(result.entries.find(entry => entry.kind === "episode")?.poster).toBe(NATIVE_POSTER);
     expect(fetcher.mock.calls.slice(6).map(([url]) => new URL(String(url)).pathname)).toEqual(["/movies/1", "/shows/4"]);
     expect(progress.at(-1)).toEqual({ checked: 2, found: 2, missing: 0, failed: 0, deferred: 0, rejected: 1 });
   });
@@ -167,7 +186,7 @@ describe("Trakt current summary artwork", () => {
       return new Response(JSON.stringify({ ids: { trakt: 1, imdb: IMDB }, title: "Changed", images: { poster: [POSTER_PATH] } }));
     });
     const result = await fetchTraktArtwork(original, CLIENT, undefined, { fetch: fetcher });
-    expect(result).toEqual({ ...original, entries: [{ ...original.entries[0], poster: METAHUB, imdbId: IMDB }] });
+    expect(result).toEqual({ ...original, entries: [{ ...original.entries[0], poster: NATIVE_POSTER, imdbId: IMDB }] });
     expect(original.entries[0]).not.toHaveProperty("poster");
   });
 
@@ -348,7 +367,7 @@ describe("Trakt persistent session tokens", () => {
 describe("Trakt complete read-only library imports", () => {
   it("retains safe movie posters across metadata updates and gives episodes their show's poster", async () => {
     const path = "walter-r2.trakt.tv/images/movies/000/012/601/posters/thumb/e0d9dd35c5.jpg.webp";
-    const poster = `https://${path}`;
+    const poster = `https://${path}`.replace("walter-r2.trakt.tv", "media.trakt.tv");
     const episode = historyEpisode();
     const fetcher = libraryFetch({
       "/users/me/history/movies": [{ ...historyMovie(), movie: movie(1, { images: { poster: ["https://evil.test/x.webp", path] } }) }],

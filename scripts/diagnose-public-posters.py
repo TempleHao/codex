@@ -42,11 +42,15 @@ for host in ["walter-r2.trakt.tv", "walter.trakt.tv"]:
     except socket.gaierror as error:
         result["dns"][host] = {"resolved": False, "detail": str(error)}
 result["publicFallback"] = probe("https://images.metahub.space/poster/medium/tt1375666/img", {"Origin": ORIGIN})
+result["nativeTrakt"] = {
+    "suppliedShow": probe("https://media.trakt.tv/images/shows/000/312/285/posters/thumb/69c487addb.jpg.webp", {"Origin": ORIGIN}),
+    "migratedDocumentedMovie": probe(SAMPLE.replace("walter-r2.trakt.tv", "media.trakt.tv"), {"Origin": ORIGIN}),
+}
 # The public title page may reveal a current poster when the guide sample is old.
 try:
     with urllib.request.urlopen("https://trakt.tv/movies/inception-2010", timeout=20) as response:
         html = response.read(2 * 1024 * 1024).decode("utf-8", errors="replace")
-    posters = re.findall(r"(?:https:)?//walter-r2\.trakt\.tv/images/[a-zA-Z0-9/_-]+/posters/[a-zA-Z0-9/_-]+\.(?:jpg|png|jpeg)\.webp", html)
+    posters = re.findall(r"(?:https:)?//(?:media|walter-r2)\.trakt\.tv/images/[a-zA-Z0-9/_-]+/posters/[a-zA-Z0-9/_-]+\.(?:jpg|png|jpeg)\.webp", html)
     result["publicTitlePage"] = {"status": 200, "posterLinks": len(set(posters))}
     if posters:
         url = posters[0] if posters[0].startswith("https:") else "https:" + posters[0]

@@ -251,7 +251,7 @@ export default function MediaPanel({ library, onChange, onRemember, trakt }: { l
             {!storedCurrent && <p className="media-muted">已有单集记录，暂缺整部剧的资料；单集的日期与感想仍可展开查看。</p>}
           </div>
         </div>
-        {!current.poster && <p className="media-muted">暂无封面：当前记录没有可用图片地址。{current.imdbId ? "已有 IMDb 编号，可以补查封面。" : "当前记录未包含 IMDb 编号；免费备用图源依赖此编号，部分节目无法通过它获取封面。"} 可在「连接与资料管理」中修复海报，重新补查作品详情。</p>}
+        {!current.poster && <p className="media-muted">暂无封面：当前记录没有可用图片地址。可在「连接与资料管理」中修复海报，从 Trakt 作品详情补查官方封面；有 IMDb 编号时也可使用备用图库。</p>}
         <details className="media-viewing-records media-poster-diagnostics" onToggle={event => { if (event.currentTarget.open) checkCurrentPoster(); }}>
           <summary>这部作品的封面诊断</summary>
           <p className="media-muted">只含作品的公开编号、作品链接与封面状态，不含观看日期、感想或账号密钥。</p>
