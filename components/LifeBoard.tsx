@@ -19,6 +19,7 @@ export interface LifeBoardProps {
   onOpenReading: () => void;
   onOpenMedia: () => void;
   onOpenThoughts: () => void;
+  revisit?: ReactNode;
 }
 
 const THREAD_KINDS: Record<LifeThread["kind"], string> = { interest: "兴趣", concern: "牵挂", question: "疑问", direction: "方向" };
@@ -90,7 +91,7 @@ function BoardModal({ title, busy, onClose, children }: { title: string; busy: b
   </div>;
 }
 
-export default function LifeBoard({ board, reading, media, thoughts, today, onBoardChange, onOpenReading, onOpenMedia, onOpenThoughts }: LifeBoardProps) {
+export default function LifeBoard({ board, reading, media, thoughts, today, onBoardChange, onOpenReading, onOpenMedia, onOpenThoughts, revisit }: LifeBoardProps) {
   const [areaFilter, setAreaFilter] = useState<Area | "all">("all");
   const [stateFilter, setStateFilter] = useState<LifeThread["state"] | "all">("all");
   const [timelineFilter, setTimelineFilter] = useState<LifeObservation["kind"] | "review" | "all">("all");
@@ -205,6 +206,7 @@ export default function LifeBoard({ board, reading, media, thoughts, today, onBo
 
   return <section className="life-board" aria-labelledby="life-board-title">
     <header className="life-board-intro"><div><p>YOUR LIFE, IN VIEW</p><h1 id="life-board-title">人生看板</h1><p>看见此刻的生活，也看见慢慢变化的自己。</p></div><div className="life-board-intro-actions"><button type="button" className="button secondary" onClick={() => openReview()} disabled={Boolean(busy)}><BoardIcon name="circle" size={17}/>写一次回顾</button><button type="button" className="button primary" onClick={() => openObservation()} disabled={Boolean(busy)}><BoardIcon name="plus" size={18}/>留下一段记录</button></div></header>
+    {revisit}
     <div className="life-board-overview" aria-label="看板中的真实留痕"><span><strong>{board.threads.length}</strong> 条生活线索</span><span><strong>{board.observations.length}</strong> 段经历、感受与发现</span><span><strong>{board.reviews.length}</strong> 次回顾</span></div>
     <div className="life-board-feedback" aria-live="polite">{message && <p className="life-board-success">{message}<button type="button" className="life-board-icon-button" onClick={() => setMessage("")} aria-label="关闭提示"><BoardIcon name="close" size={16}/></button></p>}</div>
     {error && <p className="life-board-error" role="alert">{error}<button type="button" className="life-board-icon-button" onClick={() => setError("")} aria-label="关闭错误提示"><BoardIcon name="close" size={16}/></button></p>}

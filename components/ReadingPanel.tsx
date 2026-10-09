@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
 import { formatReadingSeconds, isSafeReadingLink, mergeReadingLibraries, parseReadingImport, trustedReadingCover, type ReadingBook, type ReadingLibrary } from "@/lib/reading";
 import type { Area } from "@/lib/types";
+import type { ReadingNoteRequest } from "./ReadingRevisit";
 import "./reading.css";
 
 export type ReadingTaskDraft = { title: string; notes: string; area?: Area };
@@ -13,6 +14,8 @@ export interface ReadingPanelProps {
   onLibraryChange: (next: ReadingLibrary) => Promise<void>;
   onCreateTask: (input: ReadingTaskDraft) => void | Promise<void>;
   onCreateThought: (input: ReadingThoughtDraft) => void | Promise<void>;
+  revisit?: ReactNode;
+  noteRequest?: ReadingNoteRequest | null;
 }
 
 const STATUS_LABELS: Record<ReadingBook["status"], string> = { wanted: "想读", reading: "在读", finished: "读完" };
@@ -105,7 +108,7 @@ function ReadingDialog({ title, titleId, busy, onClose, children }: { title: str
   </div>;
 }
 
-export default function ReadingPanel({ library, onLibraryChange, onCreateTask, onCreateThought }: ReadingPanelProps) {
+export default function ReadingPanel({ library, onLibraryChange, onCreateTask, onCreateThought, revisit, noteRequest }: ReadingPanelProps) {
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState<ReadingBook["status"] | "all">("all");
   const [kindFilter, setKindFilter] = useState<ReadingBook["kind"] | "all">("all");
@@ -133,6 +136,18 @@ export default function ReadingPanel({ library, onLibraryChange, onCreateTask, o
   const readingCount = library.books.filter(book => book.status === "reading").length;
   const finishedCount = library.books.filter(book => book.status === "finished").length;
   const blockedCovers = showCovers && library.books.some(book => book.cover && !trustedReadingCover(book.cover));
+
+  useEffect(() => {
+    if (!noteRequest) return;
+    setSearch(""); setStatusFilter("all"); setKindFilter("all");
+    setSelectedId(noteRequest.bookId); setDetailTab(noteRequest.tab);
+  }, [noteRequest]);
+  useEffect(() => {
+    if (!noteRequest || selectedBook?.id !== noteRequest.bookId || detailTab !== noteRequest.tab) return;
+    const target = document.getElementById(`reading-note-${encodeURIComponent(noteRequest.noteId)}`);
+    target?.scrollIntoView({ block: "center", behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" });
+    target?.focus({ preventScroll: true });
+  }, [noteRequest, selectedBook?.id, detailTab]);
 
   function closeModal() { if (!busy) { setModal(null); setModalError(""); } }
   function navigateDetailTabs(event: ReactKeyboardEvent<HTMLButtonElement>) {
@@ -213,6 +228,7 @@ export default function ReadingPanel({ library, onLibraryChange, onCreateTask, o
 
   return <section className="reading-panel-root" aria-labelledby="reading-title">
     <header className="reading-intro"><div><p className="eyebrow">A LIFE IN BOOKS</p><h1 id="reading-title">把读过的书，慢慢留住。</h1><p>留下书籍、句子与感受，回看自己一路的阅读兴趣。</p></div><div className="reading-header-actions"><button className="button secondary" type="button" onClick={openImport} disabled={Boolean(busy)}><ReadingIcon name="upload" size={16}/>导入阅读 JSON</button><button className="button primary" type="button" onClick={openAdd} disabled={Boolean(busy)}><ReadingIcon name="plus" size={17}/>添加书籍</button></div></header>
+    {revisit}
     <div className="reading-local-note"><ReadingIcon name="note" size={17}/><p>阅读资料留在当前浏览器。微信读书书单、划线和本人想法可以通过 JSON 导入，记得定期导出完整备份。</p></div>
     <div className="reading-feedback" aria-live="polite">{message && <p className="reading-success">{message}<button type="button" onClick={() => setMessage("")} aria-label="关闭提示"><ReadingIcon name="close" size={15}/></button></p>}</div>
     {error && <p className="reading-error" role="alert">{error}<button type="button" onClick={() => setError("")} aria-label="关闭错误提示"><ReadingIcon name="close" size={15}/></button></p>}
@@ -240,7 +256,7 @@ export default function ReadingPanel({ library, onLibraryChange, onCreateTask, o
             <h3 id="reading-highlights-title" className="reading-sr-only">划线与本人想法</h3>
             <div className="reading-detail-tabs" role="tablist" aria-label="阅读笔记类型"><button id="reading-highlight-tab" type="button" role="tab" tabIndex={detailTab === "highlights" ? 0 : -1} onKeyDown={navigateDetailTabs} aria-selected={detailTab === "highlights"} aria-controls="reading-note-content" className={detailTab === "highlights" ? "active" : ""} onClick={() => setDetailTab("highlights")}>划线 <span>{selectedHighlights.filter(item => item.text.trim()).length}</span></button><button id="reading-thought-tab" type="button" role="tab" tabIndex={detailTab === "thoughts" ? 0 : -1} onKeyDown={navigateDetailTabs} aria-selected={detailTab === "thoughts"} aria-controls="reading-note-content" className={detailTab === "thoughts" ? "active" : ""} onClick={() => setDetailTab("thoughts")}>本人想法 <span>{selectedHighlights.filter(item => item.thought?.trim()).length}</span></button></div>
             <div id="reading-note-content" role="tabpanel" aria-labelledby={detailTab === "highlights" ? "reading-highlight-tab" : "reading-thought-tab"}>
-              {tabHighlights.length ? tabHighlights.map(highlight => <article className="reading-highlight" key={highlight.id}>
+              {tabHighlights.length ? tabHighlights.map(highlight => <article className={`reading-highlight ${noteRequest?.noteId === highlight.id ? "revisit-source-note" : ""}`} id={`reading-note-${encodeURIComponent(highlight.id)}`} tabIndex={-1} key={highlight.id}>
                 {highlight.chapter && <p className="reading-chapter">{highlight.chapter}</p>}
                 {detailTab === "highlights" && <blockquote>{highlight.text}</blockquote>}
                 {detailTab === "thoughts" && <><div className="reading-own-thought"><p>{highlight.thought}</p></div>{highlight.text && <details className="reading-thought-excerpt"><summary>回看原摘录</summary><blockquote>{highlight.text}</blockquote></details>}</>}

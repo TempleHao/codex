@@ -10,6 +10,8 @@ import { mergeReadingLibraries, type ReadingLibrary } from "@/lib/reading";
 import ReadingPanel, { type ReadingTaskDraft, type ReadingThoughtDraft } from "@/components/ReadingPanel";
 import ThoughtsPanel from "@/components/ThoughtsPanel";
 import LifeBoard from "@/components/LifeBoard";
+import ReadingRevisit, { type ReadingNoteRequest } from "@/components/ReadingRevisit";
+import { useReadingRevisit } from "@/components/useReadingRevisit";
 import WeReadSync from "@/components/WeReadSync";
 import MediaPanel from "@/components/MediaPanel";
 import { useTraktAutoSync } from "@/components/useTraktAutoSync";
@@ -86,6 +88,7 @@ export default function Home() {
   const [data, setData] = useState<WorkspaceData>(EMPTY);
   const [life, setLife] = useState<LifeData>(emptyLifeData);
   const [thoughtDraft, setThoughtDraft] = useState<ReadingThoughtDraft | null>(null);
+  const [readingNoteRequest, setReadingNoteRequest] = useState<ReadingNoteRequest | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadFailed, setLoadFailed] = useState(false);
   const [view, setView] = useState<View>("life");
@@ -116,6 +119,7 @@ export default function Home() {
   const dialogRef = useRef<HTMLDivElement>(null);
 
   const trakt = useTraktAutoSync({ ready: !loading && !loadFailed, library: life.media, onImport: mergeIncomingMedia, onArtwork: mergeIncomingPosters });
+  const readingRevisit = useReadingRevisit(life.reading, !loading && !loadFailed);
 
   async function load() {
     setLoading(true); setLoadFailed(false); setError("");
@@ -159,7 +163,12 @@ export default function Home() {
   const active = TITLES[taskView ? view : "today"];
   const currentName = (taskView ? TASK_NAV : NAV).find(item => item.id === view)?.title;
   const dateLabel = today ? new Intl.DateTimeFormat("zh-CN", { timeZone: "Asia/Shanghai", month: "long", day: "numeric", weekday: "long" }).format(new Date(`${today}T12:00:00+08:00`)) : "上海时间";
-  function selectView(next: View) { if (lifeWorking.current) return; setView(next); setArea("all"); setSearch(""); setExpanded(null); }
+  function selectView(next: View) { if (lifeWorking.current) return; setView(next); setArea("all"); setSearch(""); setExpanded(null); setReadingNoteRequest(null); }
+  function openReadingNote(request: ReadingNoteRequest) {
+    if (lifeWorking.current) return;
+    selectView("reading");
+    setReadingNoteRequest(request);
+  }
   function openImport() { setModal("import"); setModalError(""); }
   function openManual() { setTaskForm(freshTask()); setEditingId(null); setModalError(""); batchId.current = null; setModal("manual"); }
   function createLinkedTask(input: ReadingTaskDraft) {
@@ -335,10 +344,10 @@ export default function Home() {
         </>}
         {view !== "media" && (trakt.connected || trakt.error) && <div className="trakt-auto-status" aria-live="polite">{trakt.busy ? "正在自动更新影音…" : trakt.error || trakt.message || "Trakt 已连接，打开网页自动更新影音。"}<button type="button" className="text-button" onClick={() => selectView("media")}>查看影音</button></div>}
         {!taskView && !loading && !loadFailed && <>
-          {view === "reading" && <><ReadingPanel library={life.reading} onLibraryChange={saveReading} onCreateTask={createLinkedTask} onCreateThought={input => { setThoughtDraft(input); selectView("thoughts"); }}/><WeReadSync onImport={next => saveReading(mergeReadingLibraries(life.reading, next))}/></>}
+          {view === "reading" && <><ReadingPanel library={life.reading} noteRequest={readingNoteRequest} revisit={<ReadingRevisit controller={readingRevisit} onOpenNote={openReadingNote}/>} onLibraryChange={saveReading} onCreateTask={createLinkedTask} onCreateThought={input => { setThoughtDraft(input); selectView("thoughts"); }}/><WeReadSync onImport={next => saveReading(mergeReadingLibraries(life.reading, next))}/></>}
           {view === "media" && <MediaPanel library={life.media} onChange={saveMedia} onRemember={rememberMedia} trakt={trakt}/>}
           {view === "thoughts" && <ThoughtsPanel thoughts={life.thoughts} library={life.reading} onThoughtsChange={saveThoughts} onCreateTask={createLinkedTask} initialDraft={thoughtDraft} onDraftConsumed={() => setThoughtDraft(null)}/>}
-          {view === "life" && <LifeBoard board={life.board} reading={life.reading} media={life.media} thoughts={life.thoughts} today={today} onBoardChange={saveBoard} onOpenReading={() => selectView("reading")} onOpenMedia={() => selectView("media")} onOpenThoughts={() => selectView("thoughts")}/>}
+          {view === "life" && <LifeBoard board={life.board} revisit={<ReadingRevisit controller={readingRevisit} onOpenNote={openReadingNote} hideWhenEmpty/>} reading={life.reading} media={life.media} thoughts={life.thoughts} today={today} onBoardChange={saveBoard} onOpenReading={() => selectView("reading")} onOpenMedia={() => selectView("media")} onOpenThoughts={() => selectView("thoughts")}/>}
         </>}
         {!taskView && loading && <p className="domain-loading" role="status">正在打开你的生活记录…</p>}
         {IS_STATIC_PREVIEW && <aside className="preview-notice" aria-label="试用版数据说明"><Icon name="file" size={17}/><div><strong>个人记录与备份</strong><p>数据仅保存在当前浏览器，手机与电脑独立，记得导出备份。</p><p>清除浏览器数据会删除记录；无需连接外部 AI。</p></div></aside>}
