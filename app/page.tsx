@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { AREAS, type Area, type ImportDraft, type Task, type TaskInput, type WorkspaceData } from "@/lib/types";
 import { chinaToday, displayDate } from "@/lib/dates";
 import { parseImport } from "@/lib/import";
-import { request, IS_STATIC_PREVIEW, APP_BASE_PATH } from "@/lib/client";
+import { request, IS_STATIC_PREVIEW, APP_BASE_PATH, APP_VERSION } from "@/lib/client";
 import { emptyLifeData, type LifeData, type LifeBoardData } from "@/lib/life";
 import { mergeReadingLibraries, type ReadingLibrary } from "@/lib/reading";
 import ReadingPanel, { type ReadingTaskDraft, type ReadingThoughtDraft } from "@/components/ReadingPanel";
@@ -306,7 +306,7 @@ export default function Home() {
       <div className="sidebar-heading">我的空间</div>
       <nav className="navigation" aria-label="主导航">{NAV.map(item => <button key={item.id} className={`nav-item ${(view === item.id || (item.id === "all" && taskView)) ? "active" : ""}`} aria-current={view === item.id || (item.id === "all" && taskView) ? "page" : undefined} disabled={lifeSaving || restoring || clearing} onClick={() => selectView(item.id)}><Icon name={item.icon}/><span>{item.title}</span><small>{loading ? "·" : counts[item.id]}</small></button>)}</nav>
       <div className="sidebar-note"><span className="tiny-star">✳</span><p>生活的线头，慢慢理清。<br/>看见经历，也看见自己。</p><span className="note-line"/></div>
-      <div className="sidebar-bottom"><span className="save-dot"/>个人看板<span className="version">02</span></div>
+      <div className="sidebar-bottom"><span className="save-dot"/>个人看板<span className="version">v{APP_VERSION}</span></div>
     </aside>
 
     <main className="main">
@@ -342,7 +342,7 @@ export default function Home() {
         </>}
         {!taskView && loading && <p className="domain-loading" role="status">正在打开你的生活记录…</p>}
         {IS_STATIC_PREVIEW && <aside className="preview-notice" aria-label="试用版数据说明"><Icon name="file" size={17}/><div><strong>个人记录与备份</strong><p>数据仅保存在当前浏览器，手机与电脑独立，记得导出备份。</p><p>清除浏览器数据会删除记录；无需连接外部 AI。</p></div></aside>}
-        <footer className="page-footer"><span>有序 <span className="footer-dot">·</span> {IS_STATIC_PREVIEW ? "GitHub Pages 试用版" : "给生活一点空间"}</span><div><span className="storage-label">{IS_STATIC_PREVIEW ? "内容仅保存在当前浏览器" : "内容保存在当前服务器"}</span><button className="footer-button" onClick={() => void exportData()} disabled={exporting || loading || loadFailed || clearing || lifeSaving || restoring}><Icon name="download" size={14}/>{exporting ? "正在导出…" : "导出备份"}</button><button className="footer-button" onClick={() => restoreInput.current?.click()} disabled={restoring || loading || loadFailed || clearing || lifeSaving}><Icon name="upload" size={14}/>{restoring ? "正在恢复…" : "恢复备份"}</button>{IS_STATIC_PREVIEW && <button className="footer-button danger" onClick={() => void clearBrowserData()} disabled={clearing || loading || loadFailed || restoring || saving || lifeSaving}><Icon name="trash" size={14}/>{clearing ? "正在清空…" : "清空浏览器数据"}</button>}<input className="visually-hidden" type="file" ref={restoreInput} accept=".json,application/json" aria-label="选择完整备份文件" onChange={event => void restoreData(event.target.files?.[0])}/></div></footer>
+        <footer className="page-footer"><span>有序 <span className="footer-dot">·</span> {IS_STATIC_PREVIEW ? "GitHub Pages 试用版" : "给生活一点空间"} <span className="app-version">· v{APP_VERSION}</span></span><div><span className="storage-label">{IS_STATIC_PREVIEW ? "内容仅保存在当前浏览器" : "内容保存在当前服务器"}</span><button className="footer-button" onClick={() => void exportData()} disabled={exporting || loading || loadFailed || clearing || lifeSaving || restoring}><Icon name="download" size={14}/>{exporting ? "正在导出…" : "导出备份"}</button><button className="footer-button" onClick={() => restoreInput.current?.click()} disabled={restoring || loading || loadFailed || clearing || lifeSaving}><Icon name="upload" size={14}/>{restoring ? "正在恢复…" : "恢复备份"}</button>{IS_STATIC_PREVIEW && <button className="footer-button danger" onClick={() => void clearBrowserData()} disabled={clearing || loading || loadFailed || restoring || saving || lifeSaving}><Icon name="trash" size={14}/>{clearing ? "正在清空…" : "清空浏览器数据"}</button>}<input className="visually-hidden" type="file" ref={restoreInput} accept=".json,application/json" aria-label="选择完整备份文件" onChange={event => void restoreData(event.target.files?.[0])}/></div></footer>
       </div>
     </main>
 

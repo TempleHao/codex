@@ -8,13 +8,21 @@ GitHub 仓库存放代码，GitHub Pages 发布网页。当前版本通过 Pages
 2. 在 **Settings → Pages → Build and deployment → Source** 选择 **GitHub Actions**。这一步需要仓库管理员权限。
 3. 将应用代码以及 `.github/workflows/pages.yml` 提交到 `main`。只提交代码；原始对话、个人记录、导出备份和密钥不能放进仓库。
 4. 打开 **Actions → Publish GitHub Pages**，查看自动运行结果；也可以点击 **Run workflow** 手动运行。
-5. `build` 和 `deploy` 都成功后，打开部署记录中的网址。`TempleHao/codex` 未设置自定义域名时，预期地址为 **https://templehao.github.io/codex/**；实际地址以部署输出为准。
+5. `build` 和 `deploy` 都成功后，打开部署记录中的网址。`TempleHao/codex` 未设置自定义域名时，预期地址为 **https://templehao.github.io/codex/**；实际地址以部署输出为准。推送与手动运行还会执行 `release`，成功后可在仓库 **Releases** 查看当前版本。
 
 工作流使用 Node.js 24、锁文件安装、类型检查和单元测试，然后运行 `npm run build:preview`。构建后可选地读取微信读书，将加密阅读快照与只含状态、时间和固定错误码的文件加入 `preview-out/`，再上传静态目录。密钥、明文阅读资料和本机工作台记录不会进入发布文件。页面路径由 GitHub Pages 配置自动提供，支持仓库子路径和根路径。后续推送 `main` 会更新网页，并保留、合并已有加密快照；读取失败不发布半份资料，无法安全取回上一份快照时停止部署，避免覆盖历史。
 
 微信读书同步仍只使用免费的 GitHub Actions 与 Pages，需要配置两个仓库 Secret，步骤见 [GitHub 微信读书同步](GITHUB_READING_SYNC.md)。工作流每天定时运行两次，也可用 **Run workflow** 手动更新；定时任务默认不读取笔记，手动运行时可勾选。GitHub 定时运行可能延迟。完成同步和部署后，网页仍需解锁、预览并确认保存。
 
-无需个人访问令牌，工作流使用 GitHub 自动提供的权限。若首次运行提示找不到 Pages 配置，完成第 2 步后重新运行；若提示部署被拒绝，检查仓库的 Actions 策略及 `github-pages` 环境是否允许从 `main` 部署。
+无需个人访问令牌，工作流使用 GitHub 自动提供的权限。构建为只读，部署使用 Pages 权限，版本发布单独使用 `contents: write`。若首次运行提示找不到 Pages 配置，完成第 2 步后重新运行；若提示部署被拒绝，检查仓库的 Actions 策略及 `github-pages` 环境是否允许从 `main` 部署。Release 被拒绝时检查仓库是否允许 Actions 创建版本。
+
+## Fork 与后续更新
+
+Fork 后使用自己仓库的 Pages 网址。应用路径和上一份加密阅读快照地址均读取 Pages 配置，不再固定到 `TempleHao/codex`；微信读书需要配置自己的两个 Secret，Trakt 回调地址与 CORS 来源需要按新网址重新配置。复制代码不会复制原维护者的 Secrets，也不会迁移你的本机记录。
+
+手动运行请选择 `main`；其他分支不会构建、部署或发布版本。首次 Fork 可在 About 填写项目简介、网址和主题，参考 [GitHub 仓库资料](GITHUB_REPOSITORY.md)。
+
+推送新的软件更新前，同步修改 `package.json`、锁文件、`CHANGELOG.md` 和相关文档。工作流会先校验版本，再执行测试和部署，部署成功后才自动创建版本标签与 GitHub Release。若同版本标签已属于另一提交，构建停止，需提升版本号。定时阅读同步不会创建新版本；同提交重试保留既有 Release。详细操作见 [版本发布指南](RELEASING.md)。
 
 ## 数据与使用范围
 

@@ -1,10 +1,12 @@
 import { z } from "zod";
+import packageInfo from "../package.json";
 import { backupSchema, legacyBackupSchema, MAX_BACKUP_BYTES } from "./backup";
 import { applyLifePatch, emptyLifeData, lifeDataSchema, lifePatchSchema, mergeLifeBackups, type LifeData } from "./life";
 import type { SourceRecord, Task, WorkspaceData } from "./types";
 import { importBatchSchema, taskPatchSchema, validationErrorMessage } from "./validation";
 
 export const IS_STATIC_PREVIEW = process.env.NEXT_PUBLIC_PREVIEW_MODE === "true";
+export const APP_VERSION = packageInfo.version;
 export const APP_BASE_PATH = process.env.NEXT_PUBLIC_BASE_PATH || "";
 export const BROWSER_STORAGE_KEY = "life-workbench-preview-v1";
 const MAX_RECORDS = 5_000;

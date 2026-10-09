@@ -25,6 +25,7 @@ concurrency:
 
 jobs:
   build:
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -47,6 +48,10 @@ jobs:
         uses: actions/configure-pages@v5
       - name: Install locked dependencies
         run: npm ci --ignore-scripts
+      - name: Check version and release notes
+        run: npm run release:check -- --verify-tag
+        env:
+          GH_TOKEN: ${{ github.token }}
       - name: Check types
         run: npm run typecheck
       - name: Run unit tests
@@ -64,7 +69,7 @@ jobs:
           WEREAD_SYNC_INCLUDE_NOTES: ${{ inputs.include_notes || false }}
           WEREAD_SYNC_RESET_HISTORY: ${{ inputs.reset_history || false }}
           LIFE_SYNC_OUTPUT_DIR: preview-out
-          LIFE_SYNC_PREVIOUS_URL: https://templehao.github.io/codex/weread-sync.json
+          LIFE_SYNC_PREVIOUS_URL: ${{ steps.pages.outputs.base_url }}/weread-sync.json
       - name: Check export
         run: test -f preview-out/index.html
       - name: Upload static application
@@ -87,3 +92,24 @@ jobs:
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v4
+
+  release:
+    needs: deploy
+    if: github.ref == 'refs/heads/main' && github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - name: Check out deployed source
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - name: Publish version and changelog
+        run: node scripts/release.mjs --publish
+        env:
+          GH_TOKEN: ${{ github.token }}
