@@ -1,3 +1,4 @@
+import { optionalSnapshot } from "./snapshot-audit";
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { expect, test as base, type Page } from "@playwright/test";
@@ -57,6 +58,7 @@ const test = base.extend<{ audit: void }>({
     page.on("pageerror", error => pageErrors.push(error.message));
     page.on("console", message => {
       if (message.type() !== "error") return;
+      if (optionalSnapshot(message.location().url) && /Failed to load resource/.test(message.text())) return;
       // The failure case deliberately returns HTTP 500 from a mocked data endpoint.
       if (["https://api.trakt.tv/", "https://walter-r2.trakt.tv/", "https://media.trakt.tv/"].some(origin => message.location().url.startsWith(origin)) && /Failed to load resource/.test(message.text())) return;
       if (intentionalPosterFallback(message.location().url) && /Failed to load resource.*(?:net::ERR_FAILED|status of 500)/.test(message.text())) return;
@@ -65,9 +67,10 @@ const test = base.extend<{ audit: void }>({
     page.on("response", response => {
       if (METAHUB_POSTER_URLS.has(response.url()) && response.status() >= 400) assetFailures.push(`${response.status()} ${response.url()}`);
       if (["https://walter-r2.trakt.tv", "https://media.trakt.tv"].includes(new URL(response.url()).origin) && response.status() >= 400) rejectedPosters.add(response.url());
-      if ([APP_ORIGIN, LOCAL_ORIGIN].includes(new URL(response.url()).origin) && response.status() >= 400 && !intentionalPosterFallback(response.url())) assetFailures.push(`${response.status()} ${response.url()}`);
+      if ([APP_ORIGIN, LOCAL_ORIGIN].includes(new URL(response.url()).origin) && response.status() >= 400 && !(response.status() === 404 && optionalSnapshot(response.url())) && !intentionalPosterFallback(response.url())) assetFailures.push(`${response.status()} ${response.url()}`);
     });
     page.on("requestfailed", request => {
+      if (optionalSnapshot(request.url()) && request.failure()?.errorText === "net::ERR_ABORTED") return;
       // The downloader cancels an HTTP-error body; the poster test deliberately
       // returns one such response and verifies the fallback plus successful retry.
       if (rejectedPosters.has(request.url()) && request.failure()?.errorText === "net::ERR_ABORTED") return;

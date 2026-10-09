@@ -1,0 +1,198 @@
+name: Refresh public data
+
+on:
+  schedule:
+    - cron: "17 1,4,7,10,13,16,19,22 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      actions: write
+      pages: read
+    outputs:
+      deploy: ${{ steps.artifact.outputs.found }}
+    steps:
+      - name: Check out current source
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Find an application artifact for this exact revision
+        id: artifact
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const candidates = [];
+            for (const workflow_id of ['pages.yml', 'sync-data.yml']) {
+              const runs = await github.paginate(github.rest.actions.listWorkflowRuns, {
+                owner, repo, workflow_id, branch: 'main', status: 'success', head_sha: context.sha, per_page: 100,
+              });
+              for (const run of runs) {
+                if (run.head_sha !== context.sha || run.head_branch !== 'main') continue;
+                const result = await github.rest.actions.listWorkflowRunArtifacts({ owner, repo, run_id: run.id });
+                for (const artifact of result.data.artifacts) {
+                  if (artifact.name === 'github-pages' && !artifact.expired) candidates.push(artifact);
+                }
+                if (result.data.artifacts.some(artifact => artifact.name === 'github-pages' && !artifact.expired)) break;
+              }
+            }
+            candidates.sort((a, b) => b.created_at.localeCompare(a.created_at));
+            const artifact = candidates[0];
+            core.setOutput('found', Boolean(artifact));
+            if (!artifact) {
+              await github.rest.actions.createWorkflowDispatch({
+                owner, repo, workflow_id: 'pages.yml', ref: 'main',
+                inputs: { include_notes: 'true', sync_only: 'true' },
+              });
+              core.notice('No retained artifact for this revision. A full application refresh was dispatched; no release is requested.');
+              return;
+            }
+            const download = await github.rest.actions.downloadArtifact({ owner, repo, artifact_id: artifact.id, archive_format: 'zip' });
+            require('node:fs').writeFileSync(`${process.env.RUNNER_TEMP}/pages-artifact.zip`, Buffer.from(download.data));
+      - name: Restore the built application
+        if: steps.artifact.outputs.found == 'true'
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import os, pathlib, tarfile, zipfile
+          temporary = pathlib.Path(os.environ['RUNNER_TEMP'])
+          with zipfile.ZipFile(temporary / 'pages-artifact.zip') as archive:
+              if archive.namelist() != ['artifact.tar']:
+                  raise ValueError('Unexpected Pages artifact')
+              archive.extract('artifact.tar', temporary)
+          destination = pathlib.Path('preview-out')
+          destination.mkdir()
+          with tarfile.open(temporary / 'artifact.tar') as archive:
+              archive.extractall(destination, filter='data')
+          if not (destination / 'index.html').is_file():
+              raise ValueError('Missing static application')
+          PY
+      - name: Recover snapshots from the current deployment
+        if: steps.artifact.outputs.found == 'true'
+        run: |
+          # Application files come from the artifact; snapshots must come from
+          # the current deployment because a newer deploy can outlive a failed run.
+          rm -f preview-out/weread-sync.json preview-out/blog-sync.json
+          if [ "$(date -u +%d:%H)" = "01:01" ]; then
+            echo "BLOG_SYNC_FULL=true" >> "$GITHUB_ENV"
+          fi
+      - name: Set up Node.js
+        if: steps.artifact.outputs.found == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+      - name: Install locked synchronization dependencies
+        if: steps.artifact.outputs.found == 'true'
+        run: npm ci --ignore-scripts
+      - name: Refresh encrypted reading history
+        if: steps.artifact.outputs.found == 'true'
+        run: node scripts/run-weread-sync.mjs
+        env:
+          WEREAD_API_KEY: ${{ secrets.WEREAD_API_KEY }}
+          WEREAD_SYNC_PASSPHRASE: ${{ secrets.WEREAD_SYNC_PASSPHRASE }}
+          WEREAD_SYNC_INCLUDE_NOTES: "true"
+          LIFE_SYNC_OUTPUT_DIR: preview-out
+          LIFE_SYNC_PREVIOUS_URL: https://templehao.github.io/codex/weread-sync.json
+      - name: Refresh public blog history
+        if: steps.artifact.outputs.found == 'true'
+        run: node scripts/run-blog-sync.mjs
+        env:
+          LIFE_SYNC_OUTPUT_DIR: preview-out
+      - name: Upload refreshed application
+        if: steps.artifact.outputs.found == 'true'
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: preview-out
+          retention-days: 90
+
+  deploy:
+    needs: sync
+    if: needs.sync.outputs.deploy == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy refreshed data
+        id: deployment
+        uses: actions/deploy-pages@v4
+
+  maintenance:
+    needs: deploy
+    if: needs.deploy.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - name: Keep scheduled synchronization active
+        continue-on-error: true
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const branch = 'data-maintenance';
+            const heartbeatPath = '.sync/heartbeat.json';
+            const now = new Date();
+            const minimumInterval = 30 * 24 * 60 * 60 * 1000;
+            try {
+              let reference;
+              try {
+                reference = await github.rest.git.getRef({ owner, repo, ref: `heads/${branch}` });
+              } catch (error) {
+                if (error.status !== 404) throw error;
+                reference = await github.rest.git.createRef({ owner, repo, ref: `refs/heads/${branch}`, sha: context.sha });
+              }
+              try {
+                const file = await github.rest.repos.getContent({ owner, repo, path: heartbeatPath, ref: branch });
+                if (!Array.isArray(file.data) && file.data.type === 'file' && file.data.encoding === 'base64') {
+                  const previous = JSON.parse(Buffer.from(file.data.content, 'base64').toString('utf8'));
+                  const timestamp = Date.parse(previous.updatedAt);
+                  if (Number.isFinite(timestamp) && timestamp <= now.getTime() && now.getTime() - timestamp < minimumInterval) {
+                    core.notice('Maintenance heartbeat is less than 30 days old; no repository write needed.');
+                    await core.summary.addRaw('Maintenance heartbeat is current; no repository write was made.\n').write();
+                    return;
+                  }
+                }
+              } catch (error) {
+                // A missing or malformed heartbeat can be repaired without touching other files.
+                if (error.status !== 404 && !(error instanceof SyntaxError)) throw error;
+              }
+              const parent = await github.rest.git.getCommit({ owner, repo, commit_sha: reference.data.object.sha });
+              const tree = await github.rest.git.createTree({
+                owner, repo, base_tree: parent.data.tree.sha,
+                tree: [{ path: heartbeatPath, mode: '100644', type: 'blob', content: `${JSON.stringify({ updatedAt: now.toISOString() })}\n` }],
+              });
+              const commit = await github.rest.git.createCommit({
+                owner, repo, message: 'Maintain scheduled data synchronization',
+                tree: tree.data.sha, parents: [parent.data.sha],
+              });
+              await github.rest.git.updateRef({ owner, repo, ref: `heads/${branch}`, sha: commit.data.sha, force: false });
+              core.notice('Monthly heartbeat updated on data-maintenance; main and software releases are unchanged.');
+              await core.summary.addRaw('Monthly repository heartbeat updated on `data-maintenance`. This mitigates the 60-day inactivity timeout; GitHub does not document a guarantee for automated branch updates.\n').write();
+            } catch (error) {
+              const status = Number.isInteger(error.status) ? error.status : 'unknown';
+              const message = status === 403
+                ? 'Maintenance heartbeat was denied (HTTP 403). Repository policy must allow this job to write data-maintenance; the completed Pages deployment remains successful.'
+                : `Maintenance heartbeat could not update (HTTP ${status}). The completed Pages deployment remains successful; a later successful synchronization will retry.`;
+              core.warning(message);
+              await core.summary.addRaw(`${message}\n`).write();
+              core.setFailed(message);
+            }

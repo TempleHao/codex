@@ -37,3 +37,5 @@
   .revisit-footer { align-items: stretch; flex-direction: column; gap: 6px; }
   .revisit-footer > div { justify-content: space-between; }
 }
+.revisit-embedded { padding: 0; background: transparent; border: 0; box-shadow: none; margin: 0; }
+.life-revisit-next { display: flex; justify-content: flex-end; margin-top: 16px; }

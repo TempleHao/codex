@@ -1,14 +1,15 @@
 "use client";
 
 import { useEffect, useRef, useState, type FormEvent } from "react";
-import { APP_BASE_PATH } from "@/lib/client";
+import { fetchReadingResource as fetchResource, readBoundedText, type WeReadAutoSyncController } from "./useWeReadAutoSync";
 import { formatReadingSeconds, type ReadingLibrary } from "@/lib/reading";
-import { decryptReadingLibrary, generateReadingPassphrase, MAX_READING_ENVELOPE_BYTES } from "@/lib/reading-envelope";
+import { decryptReadingLibraryWithKey, importReadingUnlockKey, generateReadingPassphrase, MAX_READING_ENVELOPE_BYTES } from "@/lib/reading-envelope";
 import { readingSyncStatusSchema, type ReadingSyncStatus } from "@/lib/reading-sync-status";
 import "./weread-sync.css";
 
 export interface WeReadSyncProps {
   onImport: (library: ReadingLibrary) => Promise<void>;
+  controller?: WeReadAutoSyncController;
 }
 
 const requestedRepository = process.env.NEXT_PUBLIC_GITHUB_REPOSITORY || "TempleHao/codex";
@@ -49,46 +50,8 @@ function statusExplanation(status: ReadingSyncStatus): string {
   return `${prefix}${status.failureCode ? explanations[status.failureCode] ?? "请到 GitHub 查看同步结果。" : ""}`;
 }
 
-/** Bound a same-origin response before parsing; no response body enters errors. */
-async function readBoundedText(response: Response, maximum: number): Promise<string> {
-  const length = response.headers.get("content-length");
-  if (length && Number(length) > maximum) throw new Error("ResourceTooLarge");
-  if (!response.body) {
-    const text = await response.text();
-    if (new TextEncoder().encode(text).byteLength > maximum) throw new Error("ResourceTooLarge");
-    return text;
-  }
-  const reader = response.body.getReader();
-  const chunks: Uint8Array[] = [];
-  let size = 0;
-  try {
-    for (;;) {
-      const { value, done } = await reader.read();
-      if (done) break;
-      size += value.byteLength;
-      if (size > maximum) {
-        await reader.cancel();
-        throw new Error("ResourceTooLarge");
-      }
-      chunks.push(value);
-    }
-  } finally {
-    reader.releaseLock();
-  }
-  const bytes = new Uint8Array(size);
-  let offset = 0;
-  for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength; }
-  return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
-}
-
-function fetchResource(name: "weread-sync.json" | "weread-sync-status.json", signal: AbortSignal): Promise<Response> {
-  return fetch(`${APP_BASE_PATH}/${name}`, {
-    method: "GET", cache: "no-store", credentials: "omit", redirect: "error", referrerPolicy: "no-referrer", signal,
-  });
-}
-
 /** Passwords stay in uncontrolled inputs and transient refs, never workspace state. */
-export default function WeReadSync({ onImport }: WeReadSyncProps) {
+export default function WeReadSync({ onImport, controller: connection }: WeReadSyncProps) {
   const disclosureRef = useRef<HTMLDetailsElement>(null);
   const setupRef = useRef<HTMLDetailsElement>(null);
   const passwordRef = useRef<HTMLInputElement>(null);
@@ -107,9 +70,12 @@ export default function WeReadSync({ onImport }: WeReadSyncProps) {
   const [saved, setSaved] = useState(false);
   const [generated, setGenerated] = useState(false);
   const [setupMessage, setSetupMessage] = useState("");
+  const [remember, setRemember] = useState(connection?.connected ?? false);
+  const draftKeyRef = useRef<CryptoKey | null>(null);
 
   function clearPasswords() {
     transientPasswordRef.current = "";
+    draftKeyRef.current = null;
     if (passwordRef.current) passwordRef.current.value = "";
     if (generatedRef.current) generatedRef.current.value = "";
   }
@@ -119,6 +85,7 @@ export default function WeReadSync({ onImport }: WeReadSyncProps) {
     abortRef.current?.abort();
     if (timeoutRef.current !== null) clearTimeout(timeoutRef.current);
     transientPasswordRef.current = "";
+    draftKeyRef.current = null;
     if (passwordRef.current) passwordRef.current.value = "";
     if (generatedRef.current) generatedRef.current.value = "";
   }, []);
@@ -234,7 +201,14 @@ export default function WeReadSync({ onImport }: WeReadSyncProps) {
       }
       if (run !== runRef.current) return;
       let decryption: Promise<ReadingLibrary>;
-      try { decryption = decryptReadingLibrary(encrypted, transientPasswordRef.current); }
+      try {
+        const keyPromise = importReadingUnlockKey(transientPasswordRef.current);
+        decryption = keyPromise.then(async key => {
+          const library = await decryptReadingLibraryWithKey(encrypted, key);
+          if (run === runRef.current) draftKeyRef.current = key;
+          return library;
+        });
+      }
       finally { transientPasswordRef.current = ""; }
       try {
         const library = await decryption;
@@ -252,6 +226,11 @@ export default function WeReadSync({ onImport }: WeReadSyncProps) {
     const { run, controller } = begin("saving");
     try {
       await onImport(draft);
+      if (run === runRef.current && remember && draftKeyRef.current && connection) {
+        try { await connection.rememberKey(draftKeyRef.current); }
+        catch { setError("阅读记录已保存，但浏览器未能保存自动解锁设置；下次请再次解锁。"); }
+      }
+      draftKeyRef.current = null;
       if (run === runRef.current) { setDraft(null); setSaved(true); }
     } catch {
       if (run === runRef.current) setError("保存没有完成，预览仍在这里，请重试。");
@@ -285,13 +264,20 @@ export default function WeReadSync({ onImport }: WeReadSyncProps) {
   return <details className="weread-sync" ref={disclosureRef} onToggle={event => { if (!event.currentTarget.open) close(); }}>
     <summary>
       <span className="weread-sync-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M12 5C8 3 4 3 2 4v15c3-1 7-1 10 1 3-2 7-2 10-1V4c-2-1-6-1-10 1ZM12 5v15"/></svg></span>
-      <span><strong>微信读书同步</strong><small>定时更新 · 先预览，再保存</small></span>
+      <span><strong>微信读书同步</strong><small>定时云端快照 · 打开自动更新</small></span>
       <span className="weread-sync-chevron" aria-hidden="true">⌄</span>
     </summary>
     <div className="weread-sync-body">
       <p className="weread-sync-intro">让书架、阅读时长与划线想法，在这里留下痕迹。</p>
-      <p className="weread-sync-note">每天自动同步两次。想取最新记录，可以<a href={workflowUrl} target="_blank" rel="noopener noreferrer">在 GitHub 手动启动更新</a>；运行完成后，再回来读取。这里展示最近一次同步资料。</p>
+      <p className="weread-sync-note">GitHub 定时更新云端快照，并非微信读书平台实时推送。开启本机自动解锁后，每次打开或刷新网页都会读取最新快照。想取最新记录，可以<a href={workflowUrl} target="_blank" rel="noopener noreferrer">在 GitHub 手动启动更新</a>；运行完成后，再回来读取。这里展示最近一次同步资料。</p>
 
+      {connection && <div className="weread-sync-status">
+        <p>{connection.connected ? "本机已开启自动解锁，打开或刷新页面会自动合并最新快照。" : "首次使用请解锁一次，并勾选自动解锁；确认保存后生效。"}</p>
+        {connection.message && <p role="status">{connection.message}</p>}
+        {connection.error && <p role="alert">{connection.error}</p>}
+        {connection.connected && <div className="weread-sync-actions"><button type="button" disabled={connection.busy || busy !== null} onClick={() => void connection.refresh()}>刷新最新快照</button><button type="button" disabled={connection.busy || busy !== null} onClick={() => void connection.disconnect().catch(() => {})}>关闭本机自动解锁</button></div>}
+      </div>}
+      {connection && !saved && <label className="weread-sync-note"><input type="checkbox" checked={remember} onChange={event => setRemember(event.target.checked)} disabled={busy !== null}/> 在本机自动解锁最新快照（仅保存不可导出的解锁密钥）</label>}
       {saved ? <p className="weread-sync-success" role="status">阅读记录已保存。</p> : draft ? <section className="weread-sync-preview" aria-labelledby="weread-sync-preview-title">
         <h3 id="weread-sync-preview-title">已读取，等你确认</h3>
         <div className="weread-sync-counts"><span><strong>{draft.books.length}</strong> 阅读条目</span><span><strong>{draft.highlights.length}</strong> 划线与想法</span></div>
@@ -308,7 +294,7 @@ export default function WeReadSync({ onImport }: WeReadSyncProps) {
         {draft.stats && <p>累计阅读 {formatReadingSeconds(draft.stats.totalSeconds)}{draft.stats.readingDays !== undefined ? ` · ${draft.stats.readingDays} 个有效阅读日` : ""}。</p>}
         <p>资料同步时间：{displayDate(draft.syncedAt)}（北京时间）</p>
         <p className="weread-sync-note">解锁口令已清除。确认后合并到当前阅读记录，其他生活记录会继续保留。</p>
-        <div className="weread-sync-actions"><button type="button" className="weread-sync-primary" onClick={() => void save()} disabled={busy !== null}>{busy === "saving" ? "正在保存…" : "保存到阅读"}</button><button type="button" onClick={() => { setDraft(null); setError(""); }} disabled={busy !== null}>放弃预览</button></div>
+        <div className="weread-sync-actions"><button type="button" className="weread-sync-primary" onClick={() => void save()} disabled={busy !== null}>{busy === "saving" ? "正在保存…" : "保存到阅读"}</button><button type="button" onClick={() => { setDraft(null); draftKeyRef.current = null; setError(""); }} disabled={busy !== null}>放弃预览</button></div>
       </section> : <form onSubmit={event => void read(event)}>
         <label className="weread-sync-field" htmlFor="weread-sync-password">同步资料解锁口令<input ref={passwordRef} id="weread-sync-password" name="weread-sync-temporary-password" type="password" autoComplete="off" autoCapitalize="none" spellCheck={false} maxLength={1_024} placeholder="填写首次配置时保存的口令" disabled={busy !== null} aria-describedby="weread-sync-password-note"/></label>
         <p id="weread-sync-password-note" className="weread-sync-note">使用首次配置时的同步口令，至少 16 个字符。口令只用于本次解锁，读取结束或关闭时清除。</p>
@@ -319,8 +305,8 @@ export default function WeReadSync({ onImport }: WeReadSyncProps) {
       {error && <p className="weread-sync-error" role="alert">{error}</p>}
       <div className="weread-sync-status">
         <button type="button" className="weread-sync-text-button" onClick={() => void checkStatus()} disabled={busy !== null}>{busy === "status" ? "正在查看…" : "查看同步状态"}</button>
-        {status && <p>{statusExplanation(status)}<span>最近检查：{displayDate(status.updatedAt)}（北京时间）</span></p>}
-        {statusNote && <p role="status">{statusNote}</p>}
+        {(status ?? connection?.status) && <p>{statusExplanation((status ?? connection?.status)!)}<span>最近检查：{displayDate((status ?? connection?.status)?.updatedAt)}（北京时间）</span></p>}
+        {(statusNote || connection?.statusNote) && <p role="status">{statusNote || connection?.statusNote}</p>}
       </div>
       {(draft || saved) && <div className="weread-sync-actions"><button type="button" onClick={close} disabled={busy === "saving"}>关闭同步</button></div>}
 
@@ -332,7 +318,7 @@ export default function WeReadSync({ onImport }: WeReadSyncProps) {
         }
       }}>
         <summary>首次配置同步</summary>
-        <p>只需配置一次，日常回来填写同步口令即可。</p>
+        <p>只需配置一次；本机开启自动解锁后，日常打开网页即可更新。</p>
         <ol>
           <li>打开<a href={secretsUrl} target="_blank" rel="noopener noreferrer">GitHub 的 Actions Secrets 设置</a>，点击 <strong>New repository secret</strong>。</li>
           <li>添加 <code>WEREAD_API_KEY</code>，填写微信读书官方 API Key。</li>

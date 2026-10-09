@@ -1,10 +1,12 @@
 "use client";
 
-import { useEffect, useId, useMemo, useRef, useState, type FormEvent } from "react";
+import { useEffect, useId, useMemo, useRef, useState, type ReactNode, type FormEvent } from "react";
+import type { BlogArchive, BlogEntry } from "@/lib/blog";
 import type { LifeThought } from "@/lib/life";
 import { isSafeReadingLink, type ReadingLibrary } from "@/lib/reading";
 import type { Area } from "@/lib/types";
 import "./reading.css";
+import "./thoughts.css";
 
 export interface ThoughtsPanelInitialDraft {
   title: string;
@@ -19,6 +21,11 @@ export interface ThoughtsPanelProps {
   onThoughtsChange: (next: LifeThought[]) => Promise<void>;
   onCreateTask: (task: { title: string; notes: string; area?: Area }) => void | Promise<void>;
   library?: ReadingLibrary;
+  blog?: BlogArchive;
+  blogStatus?: ReactNode;
+  revisit?: ReactNode;
+  blogRequest?: string | null;
+  onBlogRequestConsumed?: () => void;
   initialDraft?: ThoughtsPanelInitialDraft | null;
   onDraftConsumed?: () => void;
 }
@@ -85,10 +92,14 @@ function ThoughtIcon({ name }: { name: "note" | "plus" | "search" | "arrow" }) {
   </svg>;
 }
 
-export default function ThoughtsPanel({ thoughts, onThoughtsChange, onCreateTask, library, initialDraft, onDraftConsumed }: ThoughtsPanelProps) {
+export default function ThoughtsPanel({ thoughts, onThoughtsChange, onCreateTask, library, initialDraft, onDraftConsumed, blog, blogStatus, revisit, blogRequest, onBlogRequestConsumed }: ThoughtsPanelProps) {
   const prefix = useId();
   const [editor, setEditor] = useState<EditorState | null>(null);
   const [search, setSearch] = useState("");
+  const [source, setSource] = useState("all");
+  const [year, setYear] = useState("");
+  const [limit, setLimit] = useState(40);
+  const [focusId, setFocusId] = useState<string | null>(null);
   const [busy, setBusy] = useState<BusyAction | null>(null);
   const [error, setError] = useState("");
   const [status, setStatus] = useState("");
@@ -101,12 +112,31 @@ export default function ThoughtsPanel({ thoughts, onThoughtsChange, onCreateTask
   const books = useMemo(() => new Map(library?.books.map(book => [book.id, book]) ?? []), [library?.books]);
   const highlights = useMemo(() => new Map(library?.highlights.map(highlight => [highlight.id, highlight]) ?? []), [library?.highlights]);
   const initialDraftKey = useMemo(() => initialDraft ? sourceDraftKey(initialDraft) : null, [initialDraft]);
+  const timeline = useMemo(() => [
+    ...thoughts.map(thought => ({ id: thought.id, date: thought.createdAt, local: thought, blog: undefined as BlogEntry | undefined })),
+    ...(blog?.entries ?? []).map(entry => ({ id: entry.id, date: entry.date, local: undefined as LifeThought | undefined, blog: entry })),
+  ].sort((a, b) => (Date.parse(b.date) || 0) - (Date.parse(a.date) || 0) || a.id.localeCompare(b.id)), [thoughts, blog?.entries]);
+  const years = useMemo(() => [...new Set(timeline.map(item => item.date.slice(0, 4)))].sort().reverse(), [timeline]);
   const visibleThoughts = useMemo(() => {
     const query = search.trim().toLocaleLowerCase();
-    return thoughts.filter(thought => !query || [thought.title, thought.body, thought.sourceExcerpt ?? "", books.get(thought.bookId ?? "")?.title ?? ""]
-      .some(text => text.toLocaleLowerCase().includes(query)))
-      .slice().sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt));
-  }, [thoughts, search, books]);
+    return timeline.filter(item => (source === "all" || (source === "blog" ? Boolean(item.blog) : Boolean(item.local)))
+      && (!year || item.date.startsWith(year))
+      && (!query || (item.local ? [item.local.title, item.local.body, item.local.sourceExcerpt ?? "", books.get(item.local.bookId ?? "")?.title ?? ""]
+        : [item.blog!.title, item.blog!.text, item.blog!.author]).some(text => text.toLocaleLowerCase().includes(query))));
+  }, [timeline, search, books, source, year]);
+  useEffect(() => {
+    if (!blogRequest) return;
+    const index = timeline.findIndex(item => item.id === blogRequest);
+    if (index < 0) return;
+    setSearch(""); setSource("all"); setYear(""); setLimit(Math.max(40, Math.ceil((index + 1) / 40) * 40)); setFocusId(blogRequest);
+    onBlogRequestConsumed?.();
+  }, [blogRequest, timeline, onBlogRequestConsumed]);
+  useEffect(() => {
+    if (!focusId) return;
+    const target = document.getElementById(`thought-${focusId}`);
+    if (!target) return;
+    target.focus(); target.scrollIntoView({ block: "center", behavior: "smooth" }); setFocusId(null);
+  }, [focusId, limit, visibleThoughts]);
 
   const editorInitial = editor?.initial;
   const editorOpen = Boolean(editor);
@@ -161,6 +191,16 @@ export default function ThoughtsPanel({ thoughts, onThoughtsChange, onCreateTask
     setStatus("");
   }
 
+  function reflectOnBlog(entry: BlogEntry) {
+    if (working.current) return;
+    if (editor && changedDraft(editor) && !window.confirm("放弃当前未保存的草稿，写下这次感受吗？")) return;
+    const draft = draftFor();
+    draft.title = `重读：${entry.title || entry.text.slice(0, 40) || "博客记录"}`.slice(0, 200);
+    draft.sourceExcerpt = `${entry.text.slice(0, 19_000)}\n\n博客 · ${entry.author} · ${dateLabel(entry.date)}\n原文：${entry.sourceUrl}`.slice(0, 20_000);
+    setEditor({ draft, initial: { ...draft }, originalUpdatedAt: null });
+    setError(""); setStatus("原文已作为来源保留，写下今天自己的感受后保存。");
+  }
+
   function closeEditor() {
     if (working.current) return;
     if (editor && changedDraft(editor) && !window.confirm("放弃这份尚未保存的思考草稿吗？")) return;
@@ -205,7 +245,7 @@ export default function ThoughtsPanel({ thoughts, onThoughtsChange, onCreateTask
         : [...thoughts, saved];
       await onThoughtsChange(next);
       setEditor(null);
-      setSearch("");
+      setSearch(""); setSource("all"); setYear("");
       setStatus(previous ? "思考已更新。" : "思考已保存。");
     } catch (cause) {
       setError(`保存失败，草稿仍保留在这里。${errorDetail(cause)}`);
@@ -258,14 +298,15 @@ export default function ThoughtsPanel({ thoughts, onThoughtsChange, onCreateTask
 
   const draft = editor?.draft;
   const selectedBookMissing = Boolean(draft?.bookId && !books.has(draft.bookId));
+  const filtered = Boolean(search.trim() || year || source !== "all");
   const readingDraftWaiting = Boolean(initialDraft && consumedReadingDraft.current !== initialDraftKey);
 
   return <section className="thoughts-panel" aria-labelledby={`${prefix}-heading`}>
     <header className="thoughts-intro">
       <div className="thoughts-heading">
         <p className="section-kicker">留一点空间，给自己的想法</p>
-        <h2 id={`${prefix}-heading`}>思考笔记 <span className="thoughts-count">{thoughts.length}</span></h2>
-        <p>感受、疑问和判断，都可以慢慢写清楚，再回头看看。</p>
+        <h2 id={`${prefix}-heading`}>思考 <span className="thoughts-count">{timeline.length}</span></h2>
+        <p>随手写下的想法和博客里的旧文字，在同一条时间线上慢慢回看。</p>
       </div>
       <button ref={newButton} className="button primary" type="button" onClick={() => openEditor()} disabled={Boolean(busy)}><ThoughtIcon name="plus"/>新建思考</button>
     </header>
@@ -274,10 +315,14 @@ export default function ThoughtsPanel({ thoughts, onThoughtsChange, onCreateTask
     {status && <p className="thoughts-status" role="status">{status}</p>}
     {readingDraftWaiting && <div className="thoughts-status thoughts-pending-draft" role="status"><p>阅读草稿已准备好。先完成当前编辑，或接收这份草稿。</p><button className="button secondary" type="button" onClick={acceptReadingDraft} disabled={Boolean(busy)}>接收阅读草稿</button></div>}
 
-    {thoughts.length > 0 && <div className="thoughts-tools">
-      <label className="thoughts-search"><ThoughtIcon name="search"/><input type="search" aria-label="搜索思考" placeholder="搜索标题、想法或书名" value={search} onChange={event => setSearch(event.target.value)}/></label>
-      <span className="thoughts-count">{search.trim() ? `${visibleThoughts.length} 条结果` : `共 ${thoughts.length} 条`}</span>
-    </div>}
+    {blogStatus}
+    {revisit}
+    <div className="thoughts-tools thoughts-timeline-tools">
+      <div className="thoughts-source-filter" role="group" aria-label="思考来源">{[["all", "全部"], ["local", "随手写"], ["blog", "博客"]].map(([value, label]) => <button key={value} type="button" aria-pressed={source === value} onClick={() => { setSource(value); setLimit(40); }}>{label}</button>)}</div>
+      <label className="thoughts-search"><ThoughtIcon name="search"/><input type="search" aria-label="搜索思考" placeholder="搜索标题、想法或书名" value={search} onChange={event => { setSearch(event.target.value); setLimit(40); }}/></label>
+      <select aria-label="思考年份" value={year} onChange={event => { setYear(event.target.value); setLimit(40); }}><option value="">所有年份</option>{years.map(value => <option key={value} value={value}>{value} 年</option>)}</select>
+      <span className="thoughts-count">{visibleThoughts.length} 条</span>
+    </div>
 
     <div className={`thoughts-layout${editor ? " thoughts-layout-editing" : ""}`}>
       {editor && draft && <section className="thoughts-editor" aria-labelledby={`${prefix}-editor-heading`}>
@@ -287,7 +332,7 @@ export default function ThoughtsPanel({ thoughts, onThoughtsChange, onCreateTask
             <label className="field" htmlFor={`${prefix}-title`}>思考标题<input ref={titleInput} id={`${prefix}-title`} value={draft.title} onChange={event => updateDraft({ title: event.target.value })} maxLength={200} placeholder="用一句话记住这个想法" required/></label>
             <label className="field" htmlFor={`${prefix}-body`}>我的想法<textarea id={`${prefix}-body`} value={draft.body} onChange={event => updateDraft({ body: event.target.value })} rows={8} maxLength={20_000} placeholder="有什么触动了你？你想继续想清楚什么？" required/></label>
             <details className="thoughts-source-fields" open={Boolean(draft.bookId || draft.sourceExcerpt)}>
-              <summary>关联书籍与原摘录（可选）</summary>
+              <summary>关联来源与原摘录（可选）</summary>
               <label className="field" htmlFor={`${prefix}-book`}>关联书籍<select id={`${prefix}-book`} value={draft.bookId} disabled={Boolean(draft.highlightId)} onChange={event => updateDraft({ bookId: event.target.value, highlightId: undefined })}><option value="">不关联书籍</option>{selectedBookMissing && <option value={draft.bookId}>原关联书籍（已不在书架）</option>}{library?.books.map(book => <option key={book.id} value={book.id}>{book.title}</option>)}</select></label>
               <label className="field" htmlFor={`${prefix}-excerpt`}>原摘录<textarea id={`${prefix}-excerpt`} value={draft.sourceExcerpt} onChange={event => updateDraft({ sourceExcerpt: event.target.value })} rows={3} maxLength={20_000} readOnly={Boolean(draft.highlightId)} placeholder="保留促成这个想法的那段原话"/>{draft.highlightId && <span>这条思考保留了原划线的来源。</span>}</label>
             </details>
@@ -297,7 +342,9 @@ export default function ThoughtsPanel({ thoughts, onThoughtsChange, onCreateTask
       </section>}
 
       <div className="thoughts-list" aria-busy={Boolean(busy && busy.kind !== "save")}>
-        {visibleThoughts.map(thought => {
+        {visibleThoughts.slice(0, limit).map(item => {
+          if (item.blog) return <BlogThoughtCard key={item.id} entry={item.blog} onReflect={() => reflectOnBlog(item.blog!)} disabled={Boolean(busy)}/>;
+          const thought = item.local!;
           const book = books.get(thought.bookId ?? "");
           const highlight = highlights.get(thought.highlightId ?? "");
           const linkedHighlight = highlight?.bookId === thought.bookId ? highlight : undefined;
@@ -305,21 +352,54 @@ export default function ThoughtsPanel({ thoughts, onThoughtsChange, onCreateTask
           const sourceLink = [linkedHighlight?.deepLink, book?.deepLink].find(link => link && isOfficialReadingLink(link));
           const deleting = busy?.kind === "delete" && busy.id === thought.id;
           const converting = busy?.kind === "task" && busy.id === thought.id;
-          return <article key={thought.id} className="thoughts-card" aria-label={thought.title}>
-            <header className="thoughts-card-heading"><h3>{thought.title}</h3><div className="thoughts-card-meta"><time dateTime={thought.updatedAt}>{dateLabel(thought.updatedAt)}</time><span>{book ? `《${book.title}》` : thought.bookId ? "来自阅读" : "随手思考"}</span></div></header>
-            <p className="thoughts-body">{thought.body}</p>
-            {(excerpt || sourceLink) && <details className="thoughts-source"><summary className="thoughts-source-label">{excerpt ? "回看原摘录" : "回看阅读来源"}{book ? ` · ${book.title}` : ""}</summary>{excerpt && <blockquote>{excerpt}</blockquote>}{sourceLink && <a href={sourceLink} target="_blank" rel="noopener noreferrer">{linkedHighlight?.deepLink === sourceLink ? "打开原划线" : "打开原书"}<ThoughtIcon name="arrow"/></a>}</details>}
+          return <article key={thought.id} id={`thought-${thought.id}`} tabIndex={-1} className="thoughts-card" aria-label={thought.title}>
+            <header className="thoughts-card-heading"><h3>{thought.title}</h3><div className="thoughts-card-meta"><time dateTime={thought.createdAt}>{dateLabel(thought.createdAt)}</time><span>{book ? `《${book.title}》` : thought.bookId ? "来自阅读" : "随手思考"}</span></div></header>
+            <ThoughtText text={thought.body}/>
+            {(excerpt || sourceLink) && <details className="thoughts-source"><summary className="thoughts-source-label">{excerpt ? "回看原摘录" : "回看阅读来源"}{book ? ` · ${book.title}` : ""}</summary>{excerpt && <blockquote>{excerpt}</blockquote>}{excerpt && blogReference(excerpt) && <a href={blogReference(excerpt)} target="_blank" rel="noopener noreferrer">打开博客原文<ThoughtIcon name="arrow"/></a>}{sourceLink && <a href={sourceLink} target="_blank" rel="noopener noreferrer">{linkedHighlight?.deepLink === sourceLink ? "打开原划线" : "打开原书"}<ThoughtIcon name="arrow"/></a>}</details>}
             <footer className="thoughts-card-actions"><div><button type="button" aria-label={`编辑思考：${thought.title}`} onClick={() => openEditor(thought)} disabled={Boolean(busy)}>编辑</button><button className="thoughts-danger" type="button" aria-label={`删除思考：${thought.title}`} onClick={() => void deleteThought(thought)} disabled={Boolean(busy)}>{deleting ? "正在删除…" : "删除"}</button></div><details className="reading-transaction-tools thoughts-transaction-tools"><summary>事务工具</summary><p>需要处理一件具体的事时，可以打开待办草稿。</p><button type="button" className="button secondary" aria-label={`转为待办：${thought.title}`} onClick={() => void createTask(thought)} disabled={Boolean(busy)}>{converting ? "正在转入…" : "转为待办"}<ThoughtIcon name="arrow"/></button></details></footer>
           </article>;
         })}
+        {visibleThoughts.length > limit && <button className="button secondary thoughts-load-more" type="button" onClick={() => setLimit(value => value + 40)}>再看 40 条（还有 {visibleThoughts.length - limit} 条）</button>}
         {visibleThoughts.length === 0 && <div className="thoughts-empty">
           <span className="thoughts-empty-art"><ThoughtIcon name="note"/></span>
-          <h3>{search.trim() ? "没有找到这条思考" : "给思考留一个位置"}</h3>
-          <p>{search.trim() ? "换一个关键词，再找找看。" : "记下当下的感受、还没想透的问题，或一次观点的变化。"}</p>
-          {search.trim() ? <button className="button secondary" type="button" onClick={() => setSearch("")}>清除搜索</button> : !editor && <button className="button secondary" type="button" onClick={() => openEditor()} disabled={Boolean(busy)}>写下第一条思考<ThoughtIcon name="plus"/></button>}
-          {!search.trim() && <span className="thoughts-empty-note">不必急着得出答案，先留下此刻的想法。</span>}
+          <h3>{filtered ? "没有找到这条思考" : "给思考留一个位置"}</h3>
+          <p>{filtered ? "换一个关键词、来源或年份，再找找看。" : "记下当下的感受、还没想透的问题，或一次观点的变化。"}</p>
+          {filtered ? <button className="button secondary" type="button" onClick={() => { setSearch(""); setSource("all"); setYear(""); setLimit(40); }}>清除筛选</button> : !editor && <button className="button secondary" type="button" onClick={() => openEditor()} disabled={Boolean(busy)}>写下第一条思考<ThoughtIcon name="plus"/></button>}
+          {!filtered && <span className="thoughts-empty-note">不必急着得出答案，先留下此刻的想法。</span>}
         </div>}
       </div>
     </div>
   </section>;
+}
+
+function publicLink(value: string): string | undefined {
+  try { const url = new URL(value); return ["https:", "http:"].includes(url.protocol) ? url.href : undefined; } catch { return undefined; }
+}
+function blogReference(excerpt: string): string | undefined {
+  const match = excerpt.match(/原文：(https:\/\/www\.ashsilent\.com\/\S+)/);
+  return match ? publicLink(match[1]) : undefined;
+}
+function ThoughtText({ text }: { text: string }) {
+  const [expanded, setExpanded] = useState(false);
+  const characters = Array.from(text);
+  const long = characters.length > 600;
+  return <><p className="thoughts-body">{expanded || !long ? text : `${characters.slice(0, 600).join("")}…`}</p>{long && <button className="text-button thoughts-expand" type="button" aria-expanded={expanded} onClick={() => setExpanded(value => !value)}>{expanded ? "收起全文" : "展开全文"}</button>}</>;
+}
+function BlogImage({ url, alt }: { url: string; alt: string }) {
+  const [failed, setFailed] = useState(false);
+  const link = publicLink(url);
+  if (!link) return null;
+  return <figure className="thoughts-blog-image">{failed ? <p>图片暂时无法加载</p> : <img src={link} alt={alt || "博客原图"} loading="lazy" referrerPolicy="no-referrer" onError={() => setFailed(true)}/>}<figcaption><a href={link} target="_blank" rel="noopener noreferrer">查看原图</a></figcaption></figure>;
+}
+function BlogThoughtCard({ entry, onReflect, disabled }: { entry: BlogEntry; onReflect: () => void; disabled: boolean }) {
+  const source = publicLink(entry.sourceUrl);
+  const links = [...new Set([...entry.links, ...entry.media.map(item => item.url)])].filter(url => publicLink(url) && url !== source);
+  return <article id={`thought-${entry.id}`} tabIndex={-1} className="thoughts-card thoughts-blog-card" aria-label={entry.title || "博客记录"}>
+    <header className="thoughts-card-heading"><h3>{entry.title || "那时的想法"}</h3><div className="thoughts-card-meta"><time dateTime={entry.date}>{dateLabel(entry.date)}</time><span>博客 · {entry.author || "AshSilent"}</span><span>原文只读</span></div></header>
+    {entry.text && <ThoughtText text={entry.text}/>}
+    {entry.images.length > 0 && <div className="thoughts-blog-images">{entry.images.map((image, index) => <BlogImage key={`${image.url}:${index}`} {...image}/>)}</div>}
+    {links.length > 0 && <details className="thoughts-source"><summary>原文中的链接与媒体（{links.length}）</summary><p>音频、视频和嵌入内容可在原页面打开。</p><ul>{links.map((link, index) => <li key={link}><a href={publicLink(link)} target="_blank" rel="noopener noreferrer">{entry.media.find(item => item.url === link)?.title || `打开链接 ${index + 1}`}</a></li>)}</ul></details>}
+    {!entry.text && !entry.images.length && <p className="thoughts-body">这条记录包含媒体或链接，可打开原文查看。</p>}
+    <footer className="thoughts-card-actions"><div>{source && <a href={source} target="_blank" rel="noopener noreferrer">原文 ↗</a>}<button type="button" onClick={onReflect} disabled={disabled}>写下此刻的感受</button></div></footer>
+  </article>;
 }

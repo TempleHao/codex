@@ -12,6 +12,12 @@ import ThoughtsPanel from "@/components/ThoughtsPanel";
 import LifeBoard from "@/components/LifeBoard";
 import ReadingRevisit, { type ReadingNoteRequest } from "@/components/ReadingRevisit";
 import { useReadingRevisit } from "@/components/useReadingRevisit";
+import LifeRevisit, { useLifeRevisitSelection } from "@/components/LifeRevisit";
+import ThoughtRevisit from "@/components/ThoughtRevisit";
+import { useThoughtRevisit } from "@/components/useThoughtRevisit";
+import { useWeReadAutoSync } from "@/components/useWeReadAutoSync";
+import { useBlogAutoSync } from "@/components/useBlogAutoSync";
+import { clearBlogCache } from "@/lib/blog-cache";
 import WeReadSync from "@/components/WeReadSync";
 import MediaPanel from "@/components/MediaPanel";
 import { useTraktAutoSync } from "@/components/useTraktAutoSync";
@@ -89,6 +95,7 @@ export default function Home() {
   const [life, setLife] = useState<LifeData>(emptyLifeData);
   const [thoughtDraft, setThoughtDraft] = useState<ReadingThoughtDraft | null>(null);
   const [readingNoteRequest, setReadingNoteRequest] = useState<ReadingNoteRequest | null>(null);
+  const [thoughtRequest, setThoughtRequest] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadFailed, setLoadFailed] = useState(false);
   const [view, setView] = useState<View>("life");
@@ -114,12 +121,21 @@ export default function Home() {
   const [clearing, setClearing] = useState(false);
   const [lifeSaving, setLifeSaving] = useState(false);
   const lifeWorking = useRef(false);
+  const lifeQueue = useRef<Promise<void>>(Promise.resolve());
+  const lifeBlocked = useRef(false);
+  lifeBlocked.current = restoring || clearing;
   const batchId = useRef<string | null>(null);
   const restoreInput = useRef<HTMLInputElement>(null);
   const dialogRef = useRef<HTMLDivElement>(null);
 
   const trakt = useTraktAutoSync({ ready: !loading && !loadFailed, library: life.media, onImport: mergeIncomingMedia, onArtwork: mergeIncomingPosters });
   const readingRevisit = useReadingRevisit(life.reading, !loading && !loadFailed);
+  const readingSync = useWeReadAutoSync({ ready: !loading && !loadFailed, onImport: mergeIncomingReading });
+  const blog = useBlogAutoSync(!loading && !loadFailed);
+  const thoughtRevisit = useThoughtRevisit(life.thoughts, blog.archive, !loading && !loadFailed);
+  const revisitSelection = useLifeRevisitSelection(readingRevisit, thoughtRevisit);
+  const autoRefresh = useRef(() => {});
+  autoRefresh.current = () => { void Promise.allSettled([readingSync.refresh(), blog.refresh(), trakt.refresh()]); };
 
   async function load() {
     setLoading(true); setLoadFailed(false); setError("");
@@ -132,6 +148,18 @@ export default function Home() {
   }
   useEffect(() => { setToday(chinaToday()); void load(); const timer = setInterval(() => setToday(chinaToday()), 60_000); return () => clearInterval(timer); }, []);
   useEffect(() => { const params = new URLSearchParams(window.location.search); if (params.has("state") && (params.has("code") || params.has("error"))) setView("media"); }, []);
+  useEffect(() => {
+    if (loading || loadFailed) return;
+    let lastChecked = Date.now();
+    const check = () => {
+      if (document.visibilityState !== "visible" || Date.now() - lastChecked < 15 * 60_000) return;
+      lastChecked = Date.now(); autoRefresh.current();
+    };
+    const online = () => { lastChecked = 0; check(); };
+    const timer = setInterval(check, 15 * 60_000);
+    document.addEventListener("visibilitychange", check); window.addEventListener("online", online);
+    return () => { clearInterval(timer); document.removeEventListener("visibilitychange", check); window.removeEventListener("online", online); };
+  }, [loading, loadFailed]);
   useEffect(() => {
     if (!modal) return;
     const previous = document.activeElement as HTMLElement | null;
@@ -153,7 +181,7 @@ export default function Home() {
 
   const isToday = (task: Task) => task.status === "todo" && (task.plannedDate === today || Boolean(task.dueDate && task.dueDate <= today));
   const isInbox = (task: Task) => task.status === "todo" && ((!task.plannedDate && !task.dueDate) || task.needsClarification.some(item => item.trim()));
-  const counts: Record<View, number> = { today: data.tasks.filter(isToday).length, inbox: data.tasks.filter(isInbox).length, all: data.tasks.filter(t => t.status === "todo").length, done: data.tasks.filter(t => t.status === "done").length, reading: life.reading.books.length, media: mediaWorkCount(life.media.entries), thoughts: life.thoughts.length, life: life.board.threads.filter(thread => thread.state === "active").length };
+  const counts: Record<View, number> = { today: data.tasks.filter(isToday).length, inbox: data.tasks.filter(isInbox).length, all: data.tasks.filter(t => t.status === "todo").length, done: data.tasks.filter(t => t.status === "done").length, reading: life.reading.books.length, media: mediaWorkCount(life.media.entries), thoughts: life.thoughts.length + (blog.archive?.entries.length ?? 0), life: life.board.threads.filter(thread => thread.state === "active").length };
   const tasks = data.tasks.filter(task => view === "today" ? isToday(task) : view === "inbox" ? isInbox(task) : view === "done" ? task.status === "done" : task.status === "todo")
     .filter(task => area === "all" || task.area === area)
     .filter(task => `${task.title} ${task.notes} ${task.sourceExcerpt} ${task.needsClarification.join(" ")}`.toLocaleLowerCase().includes(search.toLocaleLowerCase()))
@@ -163,13 +191,14 @@ export default function Home() {
   const active = TITLES[taskView ? view : "today"];
   const currentName = (taskView ? TASK_NAV : NAV).find(item => item.id === view)?.title;
   const dateLabel = today ? new Intl.DateTimeFormat("zh-CN", { timeZone: "Asia/Shanghai", month: "long", day: "numeric", weekday: "long" }).format(new Date(`${today}T12:00:00+08:00`)) : "上海时间";
-  function selectView(next: View) { if (lifeWorking.current) return; setView(next); setArea("all"); setSearch(""); setExpanded(null); setReadingNoteRequest(null); }
+  function selectView(next: View) { if (lifeWorking.current) return; setView(next); setArea("all"); setSearch(""); setExpanded(null); setReadingNoteRequest(null); setThoughtRequest(null); }
   function openReadingNote(request: ReadingNoteRequest) {
     if (lifeWorking.current) return;
     selectView("reading");
     setReadingNoteRequest(request);
   }
   function openImport() { setModal("import"); setModalError(""); }
+  function openThought(id: string) { if (lifeWorking.current) return; selectView("thoughts"); setThoughtRequest(id); }
   function openManual() { setTaskForm(freshTask()); setEditingId(null); setModalError(""); batchId.current = null; setModal("manual"); }
   function createLinkedTask(input: ReadingTaskDraft) {
     const notes = input.notes.slice(0, 5_000);
@@ -177,10 +206,18 @@ export default function Home() {
     setEditingId(null); setModalError(""); batchId.current = null; setModal("manual");
     if (notes.length < input.notes.length) setStatus("待办备注节选前 5000 字，全文保留在阅读或思考中。");
   }
-  async function saveLifeSection<K extends keyof LifeData>(section: K, next: LifeData[K]) {
-    if (lifeWorking.current || restoring || clearing) throw new Error("正在保存或恢复记录，请稍后重试。当前草稿已保留。");
+  async function withLifeSave(operation: () => Promise<void>) {
+    const previous = lifeQueue.current;
+    let release!: () => void;
+    lifeQueue.current = new Promise<void>(resolve => { release = resolve; });
+    await previous;
+    if (lifeBlocked.current) { release(); throw new Error("正在恢复或清空记录，请稍后更新。已有资料保留。"); }
     lifeWorking.current = true; setLifeSaving(true);
-    try {
+    try { await operation(); }
+    finally { lifeWorking.current = false; setLifeSaving(false); release(); }
+  }
+  async function saveLifeSection<K extends keyof LifeData>(section: K, next: LifeData[K]) {
+    await withLifeSave(async () => {
       const latest = await request<LifeData>("/api/life");
       if (JSON.stringify(latest[section]) !== JSON.stringify(life[section])) {
         setLife(latest);
@@ -188,32 +225,37 @@ export default function Home() {
       }
       const saved = await request<LifeData>("/api/life", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ section, expected: latest[section], value: next }) });
       setLife(saved);
-    } finally { lifeWorking.current = false; setLifeSaving(false); }
+    });
   }
   async function saveReading(next: ReadingLibrary) { await saveLifeSection("reading", next); }
   async function saveThoughts(next: LifeData["thoughts"]) { await saveLifeSection("thoughts", next); }
   async function saveBoard(next: LifeBoardData) { await saveLifeSection("board", next); }
   async function saveMedia(next: MediaLibrary) { await saveLifeSection("media", next); }
+  async function mergeIncomingReading(incoming: ReadingLibrary) {
+    await withLifeSave(async () => {
+      const latest = await request<LifeData>("/api/life");
+      const value = mergeReadingLibraries(latest.reading, incoming);
+      if (JSON.stringify(value) === JSON.stringify(latest.reading)) { setLife(latest); return; }
+      const saved = await request<LifeData>("/api/life", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ section: "reading", expected: latest.reading, value }) });
+      setLife(saved);
+    });
+  }
   async function mergeIncomingMedia(incoming: MediaLibrary) {
-    if (lifeWorking.current || restoring || clearing) throw new Error("正在保存资料，请稍后更新。旧记录保留。");
-    lifeWorking.current = true; setLifeSaving(true);
-    try {
+    await withLifeSave(async () => {
       const latest = await request<LifeData>("/api/life");
       const value = mergeMediaLibraries(latest.media, incoming);
       const saved = await request<LifeData>("/api/life", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ section: "media", expected: latest.media, value }) });
       setLife(saved);
-    } finally { lifeWorking.current = false; setLifeSaving(false); }
+    });
   }
   async function mergeIncomingPosters(posters: ReadonlyMap<string, string>) {
-    if (lifeWorking.current || restoring || clearing) throw new Error("正在保存资料，请稍后补图。旧记录保留。");
-    lifeWorking.current = true; setLifeSaving(true);
-    try {
+    await withLifeSave(async () => {
       const latest = await request<LifeData>("/api/life");
       const value = { ...latest.media, entries: latest.media.entries.map(entry => posters.has(entry.id) ? { ...entry, poster: posters.get(entry.id)! } : entry) };
       if (JSON.stringify(value) === JSON.stringify(latest.media)) return;
       const saved = await request<LifeData>("/api/life", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ section: "media", expected: latest.media, value }) });
       setLife(saved);
-    } finally { lifeWorking.current = false; setLifeSaving(false); }
+    });
   }
   async function rememberMedia(entry: MediaEntry) {
     const watched = [...entry.history].sort((a, b) => Date.parse(b.watchedAt.length === 10 ? `${b.watchedAt}T12:00:00+08:00` : b.watchedAt) - Date.parse(a.watchedAt.length === 10 ? `${a.watchedAt}T12:00:00+08:00` : a.watchedAt))[0]?.watchedAt;
@@ -286,19 +328,20 @@ export default function Home() {
     finally { setExporting(false); }
   }
   async function restoreData(file: File | undefined) {
-    if (!file || restoring || clearing || lifeWorking.current) return; setRestoring(true); setError("");
+    if (!file || restoring || clearing || lifeWorking.current) return; lifeBlocked.current = true; setRestoring(true); setError("");
     try {
       if (file.size > MAX_BACKUP_BYTES) throw new Error("备份文件过大，请选择小于 20 MB 的 JSON 文件。");
       const backup: unknown = JSON.parse(await file.text());
       setData(await request<WorkspaceData>("/api/restore", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(backup) })); setLife(await request<LifeData>("/api/life")); setStatus("备份已恢复，原有内容保留，重复内容已跳过。");
     } catch (cause) { setError(cause instanceof SyntaxError ? "这个文件不是有效的 JSON 备份。" : cause instanceof Error ? cause.message : "恢复失败，请检查备份文件。"); }
-    finally { setRestoring(false); if (restoreInput.current) restoreInput.current.value = ""; }
+    finally { lifeBlocked.current = false; setRestoring(false); if (restoreInput.current) restoreInput.current.value = ""; }
   }
   async function clearBrowserData() {
-    if (!IS_STATIC_PREVIEW || clearing || lifeWorking.current || !window.confirm("清空这个浏览器中保存的全部生活线索、经历、回顾、阅读、影音、思考与待办、Trakt 连接及海报缓存？此操作无法撤销。请先导出需要保留的备份；已导出的文件不会受影响。")) return;
-    setClearing(true); setError("");
+    if (!IS_STATIC_PREVIEW || clearing || lifeWorking.current || !window.confirm("清空这个浏览器中保存的全部生活线索、经历、回顾、阅读、影音、思考与待办、自动解锁设置、Trakt 连接及缓存？此操作无法撤销。请先导出需要保留的备份；已导出的文件不会受影响。")) return;
+    lifeBlocked.current = true; setClearing(true); setError("");
     try {
       await trakt.disconnect();
+      await readingSync.disconnect(); blog.reset(); await clearBlogCache();
       await request("/api/workspace", { method: "DELETE" });
       setData(EMPTY); setLife(emptyLifeData()); setThoughtDraft(null); setDraft(null); setImportText(""); setOriginalText(""); setIncluded([]); setSample(false); batchId.current = null;
       selectView("life");
@@ -306,7 +349,7 @@ export default function Home() {
       await clearPosterWorkerCache();
       setStatus("当前浏览器中的生活记录、阅读、影音、思考、待办、原文和海报缓存已清空。");
     } catch (cause) { setError(cause instanceof Error ? cause.message : "清空失败，请重试。"); }
-    finally { setClearing(false); }
+    finally { lifeBlocked.current = false; setClearing(false); }
   }
 
   return <div className="workspace">
@@ -344,10 +387,10 @@ export default function Home() {
         </>}
         {view !== "media" && (trakt.connected || trakt.error) && <div className="trakt-auto-status" aria-live="polite">{trakt.busy ? "正在自动更新影音…" : trakt.error || trakt.message || "Trakt 已连接，打开网页自动更新影音。"}<button type="button" className="text-button" onClick={() => selectView("media")}>查看影音</button></div>}
         {!taskView && !loading && !loadFailed && <>
-          {view === "reading" && <><ReadingPanel library={life.reading} noteRequest={readingNoteRequest} revisit={<ReadingRevisit controller={readingRevisit} onOpenNote={openReadingNote}/>} onLibraryChange={saveReading} onCreateTask={createLinkedTask} onCreateThought={input => { setThoughtDraft(input); selectView("thoughts"); }}/><WeReadSync onImport={next => saveReading(mergeReadingLibraries(life.reading, next))}/></>}
+          {view === "reading" && <><ReadingPanel library={life.reading} noteRequest={readingNoteRequest} revisit={<ReadingRevisit controller={readingRevisit} onOpenNote={openReadingNote}/>} onLibraryChange={saveReading} onCreateTask={createLinkedTask} onCreateThought={input => { setThoughtDraft(input); selectView("thoughts"); }}/><WeReadSync onImport={mergeIncomingReading} controller={readingSync}/></>}
           {view === "media" && <MediaPanel library={life.media} onChange={saveMedia} onRemember={rememberMedia} trakt={trakt}/>}
-          {view === "thoughts" && <ThoughtsPanel thoughts={life.thoughts} library={life.reading} onThoughtsChange={saveThoughts} onCreateTask={createLinkedTask} initialDraft={thoughtDraft} onDraftConsumed={() => setThoughtDraft(null)}/>}
-          {view === "life" && <LifeBoard board={life.board} revisit={<ReadingRevisit controller={readingRevisit} onOpenNote={openReadingNote} hideWhenEmpty/>} reading={life.reading} media={life.media} thoughts={life.thoughts} today={today} onBoardChange={saveBoard} onOpenReading={() => selectView("reading")} onOpenMedia={() => selectView("media")} onOpenThoughts={() => selectView("thoughts")}/>}
+          {view === "thoughts" && <ThoughtsPanel thoughts={life.thoughts} library={life.reading} onThoughtsChange={saveThoughts} onCreateTask={createLinkedTask} initialDraft={thoughtDraft} onDraftConsumed={() => setThoughtDraft(null)} blog={blog.archive} blogRequest={thoughtRequest} onBlogRequestConsumed={() => setThoughtRequest(null)} revisit={<ThoughtRevisit controller={thoughtRevisit} onOpenThought={openThought}/>} blogStatus={<div className="blog-sync-note" role="status"><span>{blog.busy ? "正在检查最新博客内容…" : blog.error || blog.message}{blog.archive && ` · ${blog.archive.entries.length} 条 · 资料同步于 ${new Date(blog.archive.updatedAt).toLocaleString("zh-CN", { timeZone: "Asia/Shanghai" })}`}</span><button type="button" className="text-button" disabled={blog.busy} onClick={() => void blog.refresh()}>检查更新</button></div>}/>}
+          {view === "life" && <LifeBoard board={life.board} revisit={<LifeRevisit reading={readingRevisit} thoughts={thoughtRevisit} selection={revisitSelection} onOpenNote={openReadingNote} onOpenThought={openThought}/>} reading={life.reading} media={life.media} thoughts={life.thoughts} thoughtCount={counts.thoughts} today={today} onBoardChange={saveBoard} onOpenReading={() => selectView("reading")} onOpenMedia={() => selectView("media")} onOpenThoughts={() => selectView("thoughts")}/>}
         </>}
         {!taskView && loading && <p className="domain-loading" role="status">正在打开你的生活记录…</p>}
         {IS_STATIC_PREVIEW && <aside className="preview-notice" aria-label="试用版数据说明"><Icon name="file" size={17}/><div><strong>个人记录与备份</strong><p>数据仅保存在当前浏览器，手机与电脑独立，记得导出备份。</p><p>清除浏览器数据会删除记录；无需连接外部 AI。</p></div></aside>}

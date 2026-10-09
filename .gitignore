@@ -2,6 +2,7 @@ node_modules/
 .next/
 .preview-build-*/
 .weread-sync-build-*/
+.blog-sync-build-*/
 preview-out/
 next-env.d.ts
 .data/

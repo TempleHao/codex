@@ -1,3 +1,4 @@
+import { optionalSnapshot } from "./snapshot-audit";
 import { readFile } from "node:fs/promises";
 import { expect, test as base, type Page } from "@playwright/test";
 import { emptyLifeData, type LifeData } from "../lib/life";
@@ -24,9 +25,9 @@ const test = base.extend<{ audit: void }>({
       }
     });
     page.on("pageerror", error => pageErrors.push(error.message));
-    page.on("console", message => { if (message.type() === "error") pageErrors.push(message.text()); });
-    page.on("response", response => { if (response.status() >= 400) resourceErrors.push(`${response.status()} ${response.url()}`); });
-    page.on("requestfailed", request => resourceErrors.push(`${request.failure()?.errorText} ${request.url()}`));
+    page.on("console", message => { if (message.type() === "error" && !(optionalSnapshot(message.location().url) && /Failed to load resource/.test(message.text()))) pageErrors.push(message.text()); });
+    page.on("response", response => { if (response.status() >= 400 && !(response.status() === 404 && optionalSnapshot(response.url()))) resourceErrors.push(`${response.status()} ${response.url()}`); });
+    page.on("requestfailed", request => { if (!(optionalSnapshot(request.url()) && request.failure()?.errorText === "net::ERR_ABORTED")) resourceErrors.push(`${request.failure()?.errorText} ${request.url()}`); });
     await use();
     expect(forbiddenRequests, "网页同步只下载本站文件，不调用官方接口或后台 API").toEqual([]);
     expect(pageErrors, "解锁与确认流程不应发生未处理的页面错误").toEqual([]);
@@ -248,7 +249,7 @@ test("未配置状态展示 GitHub Secrets 入口，网页没有 API Key 输入�
   await page.getByRole("button", { name: "查看同步状态", exact: true }).click();
   await expect(page.locator(".weread-sync")).toContainText("请先完成首次配置");
   await expect(page.getByRole("heading", { name: "已读取，等你确认", exact: true })).not.toBeVisible();
-  expect(sync.requests.filter(path => path.endsWith("/weread-sync.json"))).toEqual([]);
+  expect(sync.requests.filter(path => path.endsWith("/weread-sync.json"))).toHaveLength(1);
   expect(await rawStorage(page)).toBeNull();
 });
 
@@ -262,6 +263,7 @@ test("本次同步失败但保留旧快照时明确显示状态，仍须解锁�
 });
 
 test("浏览器生成随机长口令供首次配置，关闭配置即清除，不进入个人记录", async ({ page }) => {
+  await mockSync(page);
   await openReading(page, originalState());
   const before = await rawStorage(page);
   await page.getByText("首次配置同步", { exact: true }).click();
@@ -283,4 +285,61 @@ test("浏览器生成随机长口令供首次配置，关闭配置即清除，�
   await page.getByText("微信读书同步", { exact: true }).click();
   await expect(generated).toHaveValue("");
   expect(await rawStorage(page)).toBe(before);
+});
+
+
+test("开启本机自动解锁后，在首页刷新导入最新盐值的快照，导航不重复下载，断开保留记录", async ({ page }) => {
+  test.setTimeout(60_000);
+  const sync = await mockSync(page);
+  await openReading(page, originalState());
+  await page.getByRole("checkbox", { name: /在本机自动解锁最新快照/ }).check();
+  await unlock(page);
+  await expect(page.getByRole("heading", { name: "已读取，等你确认", exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "保存到阅读", exact: true }).click();
+  await expect(page.locator(".weread-sync")).toContainText("本机已开启自动解锁");
+  const keyMetadata = await page.evaluate(async () => {
+    return new Promise<{ extractable: boolean; algorithm: string; usages: string[] }>((resolve, reject) => {
+      const request = indexedDB.open("life-workbench-reading-connection-v1", 1);
+      request.onerror = () => reject(new Error("TestDatabaseUnavailable"));
+      request.onsuccess = () => {
+        const db = request.result;
+        const tx = db.transaction("connection", "readonly");
+        const stored = tx.objectStore("connection").get("active");
+        tx.oncomplete = () => {
+          const key = stored.result as CryptoKey;
+          resolve({ extractable: key.extractable, algorithm: key.algorithm.name, usages: key.usages });
+          db.close();
+        };
+      };
+    });
+  });
+  expect(keyMetadata).toEqual({ extractable: false, algorithm: "PBKDF2", usages: ["deriveKey"] });
+  const next = synchronizedLibrary();
+  next.books[0].title = "刷新首页后自动读取的最新书名";
+  next.syncedAt = "2026-10-09T04:00:00.000Z";
+  const oldSalt = sync.envelope.kdf.salt;
+  sync.envelope = await encryptReadingLibrary(next, PASSPHRASE);
+  expect(sync.envelope.kdf.salt).not.toBe(oldSalt);
+  const beforeReloadRequests = sync.requests.length;
+  await page.reload();
+  await expect.poll(async () => (await persisted(page))?.life.reading.books.find(book => book.id === "shared-book")?.title).toBe(next.books[0].title);
+  expect(sync.requests.length - beforeReloadRequests).toBe(2);
+  await page.getByRole("navigation", { name: "主导航" }).getByRole("button", { name: /^阅读/ }).click();
+  await page.getByText("微信读书同步", { exact: true }).click();
+  await expect(page.locator(".weread-sync")).toContainText("已自动合并最新云端阅读快照");
+  await page.getByRole("navigation", { name: "主导航" }).getByRole("button", { name: /^思考/ }).click();
+  await page.getByRole("navigation", { name: "主导航" }).getByRole("button", { name: /^阅读/ }).click();
+  await page.getByText("微信读书同步", { exact: true }).click();
+  expect(sync.requests.length - beforeReloadRequests).toBe(2);
+  const beforeDisconnect = await rawStorage(page);
+  await page.getByRole("button", { name: "关闭本机自动解锁", exact: true }).click();
+  await expect(page.locator(".weread-sync")).toContainText("已关闭本机自动解锁");
+  expect(await rawStorage(page)).toBe(beforeDisconnect);
+  expect(await rawStorage(page)).not.toContain(PASSPHRASE);
+  next.books[0].title = "断开后不应自动导入的书名";
+  sync.envelope = await encryptReadingLibrary(next, PASSPHRASE);
+  await page.reload();
+  await expect(page.getByRole("button", { name: "导出备份", exact: true })).toBeEnabled();
+  await expect.poll(() => sync.requests.length).toBe(beforeReloadRequests + 4);
+  expect(await rawStorage(page)).toBe(beforeDisconnect);
 });

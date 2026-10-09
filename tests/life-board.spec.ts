@@ -1,3 +1,4 @@
+import { optionalSnapshot } from "./snapshot-audit";
 import { readFile } from "node:fs/promises";
 import { expect, test as base, type Page } from "@playwright/test";
 import type { LifeData, LifeObservation, LifeThread } from "../lib/life";
@@ -17,15 +18,15 @@ const test = base.extend<{ audit: void }>({
       if (watched.has(target)) return;
       watched.add(target);
       target.on("pageerror", error => pageErrors.push(error.message));
-      target.on("console", message => { if (message.type() === "error") pageErrors.push(message.text()); });
+      target.on("console", message => { if (message.type() === "error" && !(optionalSnapshot(message.location().url) && /Failed to load resource/.test(message.text()))) pageErrors.push(message.text()); });
       target.on("request", request => {
         const url = new URL(request.url());
         if (!["http:", "https:"].includes(url.protocol)) return;
         if (/(?:^|\/)api(?:\/|$)/.test(url.pathname)) apiCalls.push(`${request.method()} ${url.pathname}`);
         if (url.hostname !== "127.0.0.1" && url.hostname !== "localhost") externalCalls.push(url.origin);
       });
-      target.on("response", response => { if (response.status() >= 400) failedResources.push(`${response.status()} ${response.url()}`); });
-      target.on("requestfailed", request => failedResources.push(`${request.failure()?.errorText} ${request.url()}`));
+      target.on("response", response => { if (response.status() >= 400 && !(response.status() === 404 && optionalSnapshot(response.url()))) failedResources.push(`${response.status()} ${response.url()}`); });
+      target.on("requestfailed", request => { if (!(optionalSnapshot(request.url()) && request.failure()?.errorText === "net::ERR_ABORTED")) failedResources.push(`${request.failure()?.errorText} ${request.url()}`); });
     };
     watch(page);
     context.on("page", watch);

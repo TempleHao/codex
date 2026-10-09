@@ -87,17 +87,17 @@ function decodeBase64url(value: string): Uint8Array<ArrayBuffer> {
   return bytes;
 }
 
-async function deriveKey(passphrase: string, salt: Uint8Array<ArrayBuffer>, iterations: number): Promise<CryptoKey> {
-  const provider = cryptoProvider();
-  const passphraseBytes = encoder.encode(passphrase);
-  try {
-    const material = await provider.subtle.importKey("raw", passphraseBytes, "PBKDF2", false, ["deriveKey"]);
-    return await provider.subtle.deriveKey({
-      name: "PBKDF2", hash: "SHA-256", salt, iterations,
-    }, material, { name: "AES-GCM", length: 256 }, false, ["encrypt", "decrypt"]);
-  } finally {
-    passphraseBytes.fill(0);
-  }
+/** Reusable, non-extractable PBKDF2 material; no raw password is retained. */
+export async function importReadingUnlockKey(passphrase: string): Promise<CryptoKey> {
+  checkPassphrase(passphrase);
+  const bytes = encoder.encode(passphrase);
+  try { return await cryptoProvider().subtle.importKey("raw", bytes, "PBKDF2", false, ["deriveKey"]); }
+  finally { bytes.fill(0); }
+}
+
+async function deriveKey(material: CryptoKey, salt: Uint8Array<ArrayBuffer>, iterations: number): Promise<CryptoKey> {
+  return cryptoProvider().subtle.deriveKey({ name: "PBKDF2", hash: "SHA-256", salt, iterations },
+    material, { name: "AES-GCM", length: 256 }, false, ["encrypt", "decrypt"]);
 }
 
 /** Generate a portable 256-bit random sync passphrase. It is never persisted here. */
@@ -123,7 +123,7 @@ export async function encryptReadingLibrary(library: ReadingLibrary, passphrase:
     const provider = cryptoProvider();
     const salt = provider.getRandomValues(new Uint8Array(16));
     const iv = provider.getRandomValues(new Uint8Array(12));
-    const key = await deriveKey(passphrase, salt, ITERATIONS);
+    const key = await deriveKey(await importReadingUnlockKey(passphrase), salt, ITERATIONS);
     const ciphertext = await provider.subtle.encrypt({
       name: "AES-GCM", iv, additionalData: associatedData, tagLength: AUTH_TAG_BYTES * 8,
     }, key, plaintext);
@@ -143,9 +143,14 @@ export async function encryptReadingLibrary(library: ReadingLibrary, passphrase:
 
 /** Incorrect passwords, damaged files, and invalid plaintext receive one error. */
 export async function decryptReadingLibrary(input: unknown, passphrase: string): Promise<ReadingLibrary> {
+  try { return await decryptReadingLibraryWithKey(input, await importReadingUnlockKey(passphrase)); }
+  catch { throw new Error("无法解密阅读资料，请检查同步口令与文件。"); }
+}
+
+/** Derive a fresh AES key for each envelope salt from saved PBKDF2 material. */
+export async function decryptReadingLibraryWithKey(input: unknown, material: CryptoKey): Promise<ReadingLibrary> {
   let plaintext: Uint8Array<ArrayBuffer> | undefined;
   try {
-    checkPassphrase(passphrase);
     let value = input;
     if (typeof input === "string") {
       if (input.length > MAX_READING_ENVELOPE_BYTES
@@ -155,7 +160,7 @@ export async function decryptReadingLibrary(input: unknown, passphrase: string):
       value = JSON.parse(input);
     }
     const envelope = readingEnvelopeSchema.parse(value);
-    const key = await deriveKey(passphrase, decodeBase64url(envelope.kdf.salt), envelope.kdf.iterations);
+    const key = await deriveKey(material, decodeBase64url(envelope.kdf.salt), envelope.kdf.iterations);
     const decrypted = await cryptoProvider().subtle.decrypt({
       name: "AES-GCM", iv: decodeBase64url(envelope.cipher.iv),
       additionalData: associatedData, tagLength: AUTH_TAG_BYTES * 8,

@@ -8,13 +8,15 @@ on:
       include_notes:
         description: "Also sync highlights and thoughts (up to 1000 notebook books)"
         type: boolean
-        default: false
+        default: true
       reset_history:
         description: "Rebuild cloud reading history after losing the passphrase; browser records stay intact"
         type: boolean
         default: false
-  schedule:
-    - cron: "17 1,13 * * *"
+      sync_only:
+        description: "Refresh data without publishing a software release"
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -27,7 +29,7 @@ jobs:
   build:
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 30
     permissions:
       contents: read
       pages: read
@@ -66,17 +68,21 @@ jobs:
         env:
           WEREAD_API_KEY: ${{ secrets.WEREAD_API_KEY }}
           WEREAD_SYNC_PASSPHRASE: ${{ secrets.WEREAD_SYNC_PASSPHRASE }}
-          WEREAD_SYNC_INCLUDE_NOTES: ${{ inputs.include_notes || false }}
+          WEREAD_SYNC_INCLUDE_NOTES: ${{ github.event_name == 'push' || inputs.include_notes }}
           WEREAD_SYNC_RESET_HISTORY: ${{ inputs.reset_history || false }}
           LIFE_SYNC_OUTPUT_DIR: preview-out
           LIFE_SYNC_PREVIOUS_URL: ${{ steps.pages.outputs.base_url }}/weread-sync.json
+      - name: Sync public blog history
+        run: node scripts/run-blog-sync.mjs
+        env:
+          LIFE_SYNC_OUTPUT_DIR: preview-out
       - name: Check export
         run: test -f preview-out/index.html
       - name: Upload static application
         uses: actions/upload-pages-artifact@v3
         with:
           path: preview-out
-          retention-days: 1
+          retention-days: 90
 
   deploy:
     needs: build
@@ -95,7 +101,7 @@ jobs:
 
   release:
     needs: deploy
-    if: github.ref == 'refs/heads/main' && github.event_name != 'schedule'
+    if: github.ref == 'refs/heads/main' && github.event_name != 'schedule' && inputs.sync_only != true
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
