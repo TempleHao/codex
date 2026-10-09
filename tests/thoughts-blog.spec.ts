@@ -8,7 +8,7 @@ const archive: BlogArchive = {
   version: 1, sourceUrl: "https://www.ashsilent.com/", updatedAt: "2026-10-09T00:00:00Z",
   entries: Array.from({ length: 85 }, (_, index) => ({
     id: `ashsilent:shuoshuo:${index + 1}`, sourceUrl: `https://www.ashsilent.com/shuoshuo/${index + 1}/`,
-    date: new Date(Date.UTC(2025, 0, 85 - index)).toISOString(), title: `旧文字 ${index + 1}`, author: "测试作者",
+    date: new Date(Date.UTC(2025, 0, 85 - index)).toISOString(), title: index === 0 ? "" : `旧文字 ${index + 1}`, author: "测试作者",
     text: index === 0 ? "慢慢想清楚。".repeat(120) + "<script>原文只是文字</script>" : `这是第 ${index + 1} 条测试感受。`,
     images: [], media: [], links: [],
   })),
@@ -28,12 +28,22 @@ async function open(page: Page) {
 }
 test("统一时间线按原日期排列，分页和来源年份搜索不改写记录", async ({ page }) => {
   await open(page);
-  await expect(page.locator(".thoughts-list>.thoughts-card")).toHaveCount(40);
+  const pagination = page.getByRole("navigation", { name: "思考分页（顶部）" });
+  await expect(page.locator(".thoughts-list>.thoughts-card")).toHaveCount(15);
   await expect(page.locator(".thoughts-list>.thoughts-card").first()).toContainText("今天随手写");
-  await page.getByRole("button", { name: /再看 40 条/ }).click();
-  await expect(page.locator(".thoughts-list>.thoughts-card")).toHaveCount(80);
+  await expect(pagination.getByRole("button", { name: "上一页" })).toBeDisabled();
+  await pagination.getByRole("button", { name: "下一页" }).click();
+  await expect(page.locator(".thoughts-list>.thoughts-card")).toHaveCount(15);
+  await expect(page.locator(".thoughts-list>.thoughts-card").first()).toContainText("旧文字 15");
+  await expect(page.locator(".thoughts-list-top")).toBeFocused();
+  await page.getByLabel("思考页码（顶部）").selectOption("6");
+  await expect(page.locator(".thoughts-list>.thoughts-card")).toHaveCount(11);
+  await expect(pagination.getByRole("button", { name: "下一页" })).toBeDisabled();
+  await page.getByRole("navigation", { name: "思考分页（底部）" }).getByRole("button", { name: "上一页" }).click();
+  await expect(page.getByLabel("思考页码（顶部）")).toHaveValue("5");
   await page.getByRole("group", { name: "思考来源" }).getByRole("button", { name: "博客", exact: true }).click();
-  await expect(page.locator(".thoughts-list>.thoughts-card")).toHaveCount(40);
+  await expect(page.locator(".thoughts-list>.thoughts-card")).toHaveCount(15);
+  await expect(page.getByLabel("思考页码（顶部）")).toHaveValue("1");
   await page.getByLabel("思考年份").selectOption("2026");
   await expect(page.locator(".thoughts-blog-card")).toHaveCount(0);
   await page.getByRole("button", { name: "清除筛选" }).click();
@@ -47,6 +57,8 @@ test("统一时间线按原日期排列，分页和来源年份搜索不改写�
 test("博客长原文安全展示，重读感受另存为本地思考并保留来源", async ({ page }) => {
   await open(page);
   const first = page.locator(".thoughts-blog-card").first();
+  await expect(first.getByRole("heading")).toHaveCount(0);
+  await expect(page.locator(".thoughts-panel")).not.toContainText("那时的想法");
   await first.getByRole("button", { name: "展开全文", exact: true }).click();
   await expect(first.locator(".thoughts-body")).toHaveText(archive.entries[0].text);
   await expect(first.locator("script")).toHaveCount(0);
@@ -81,8 +93,16 @@ test("博客长原文安全展示，重读感受另存为本地思考并保留�
   await expect(revisit).toContainText("一个属于今天的疑问。");
   await revisit.getByRole("button", { name: "换一条", exact: true }).click();
   await expect(revisit).toContainText("测试作者");
+  await expect(revisit.locator(".revisit-source strong")).toHaveCount(0);
   await revisit.getByRole("button", { name: "在思考中查看", exact: true }).click();
   await expect(page.locator('[id="thought-ashsilent:shuoshuo:1"]')).toBeFocused();
+  await page.evaluate(() => { Math.random = () => 0.999999; });
+  await revisit.getByRole("button", { name: "换一条", exact: true }).click();
+  await expect(revisit).toContainText("第 85 条");
+  await revisit.getByRole("button", { name: "在思考中查看", exact: true }).click();
+  await expect(page.locator('[id="thought-ashsilent:shuoshuo:85"]')).toBeFocused();
+  await expect(page.getByLabel("思考页码（顶部）")).toHaveValue("6");
+  await expect(page.locator(".thoughts-list>.thoughts-card")).toHaveCount(11);
 });
 
 test("刷新合并新博客内容，网络失败时缓存和本机思考都保留", async ({ page }) => {

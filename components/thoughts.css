@@ -1,1 +1,216 @@
 .thoughts-timeline-tools{flex-wrap:wrap;gap:12px}.thoughts-timeline-tools .thoughts-search{flex-basis:200px}.thoughts-source-filter{display:flex;gap:5px;flex-wrap:wrap}.thoughts-source-filter button{padding:9px 12px;border-radius:8px;font-size:13px;color:var(--muted)}.thoughts-source-filter button[aria-pressed=true]{background:var(--green-light);color:var(--green)}.thoughts-timeline-tools select{background:var(--surface);color:var(--ink);border:1px solid var(--line);border-radius:8px;padding:9px;font-size:13px;max-width:100%}.thoughts-expand{margin-top:10px;font-size:13px;color:var(--green)}.thoughts-blog-images{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(180px,100%),1fr));gap:14px;margin-top:20px}.thoughts-blog-image{margin:0;min-width:0}.thoughts-blog-image img{width:100%;height:auto;max-height:420px;object-fit:contain;border-radius:8px;background:var(--paper)}.thoughts-blog-image figcaption{font-size:12px;margin-top:6px;color:var(--green)}.thoughts-card-actions a{font-size:13px;min-height:36px;display:inline-flex;align-items:center;color:var(--green)}.thoughts-source ul{padding-left:20px;overflow-wrap:anywhere}.thoughts-source li{margin-top:9px}.thoughts-blog-card:focus,.thoughts-card:focus{outline:2px solid var(--green);outline-offset:4px}.thoughts-load-more{align-self:center}.thought-revisit-embedded{min-width:0}.thought-revisit-embedded .revisit-footer{flex-wrap:wrap;gap:14px}.thought-revisit-embedded .revisit-footer>div{flex-wrap:wrap}.thought-revisit{margin-bottom:24px}@media(max-width:600px){.thoughts-timeline-tools{align-items:stretch}.thoughts-timeline-tools .thoughts-search{flex-basis:100%}.thoughts-source-filter button{min-height:42px}.thoughts-timeline-tools select{font-size:16px}.thoughts-blog-images{grid-template-columns:minmax(0,1fr)}.thought-revisit-embedded .revisit-footer>div{gap:12px}}
+
+/* Keep the timeline quiet enough to read several entries in one sitting. */
+.thoughts-panel .thoughts-list {
+  gap: 18px;
+  min-width: 0;
+}
+.thoughts-panel .thoughts-layout:not(.thoughts-layout-editing) {
+  width: 100%;
+  max-width: 900px;
+  margin-inline: auto;
+}
+.thoughts-panel .thoughts-card {
+  padding: 28px 30px;
+  border-radius: 14px;
+  box-shadow: 0 2px 9px #263b3204;
+}
+.thoughts-panel .thoughts-card-heading h3 {
+  font-size: 22px;
+  line-height: 1.65;
+  margin: 12px 0 0;
+}
+.thoughts-panel .thoughts-card-meta {
+  gap: 5px 14px;
+  margin-top: 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.9;
+  overflow-wrap: anywhere;
+}
+.thoughts-panel .thoughts-card-meta > span {
+  padding: 0;
+  border-radius: 0;
+  background: transparent;
+}
+.thoughts-panel .thoughts-card-meta time {
+  font-variant-numeric: tabular-nums;
+}
+.thoughts-panel .thoughts-body {
+  margin-top: 18px;
+  font-size: 15px;
+  line-height: 2;
+  letter-spacing: .015em;
+}
+.thoughts-panel .thoughts-card-actions {
+  gap: 8px 18px;
+  margin-top: 22px;
+  padding-top: 12px;
+  align-items: center;
+}
+.thoughts-panel .thoughts-card-actions > div {
+  flex-wrap: wrap;
+  gap: 4px 20px;
+}
+.thoughts-panel .thoughts-card-actions button,
+.thoughts-panel .thoughts-card-actions a,
+.thoughts-panel .thoughts-expand {
+  min-height: 44px;
+  line-height: 1.6;
+}
+.thoughts-panel .thoughts-card-actions .thoughts-transaction-tools {
+  font-size: 12px;
+}
+.thoughts-panel .thoughts-source {
+  margin-top: 18px;
+  padding: 13px 16px;
+  background: var(--paper);
+}
+.thoughts-list-top {
+  min-width: 0;
+  scroll-margin-top: 24px;
+}
+.thoughts-list-top:focus-visible {
+  outline: 2px solid var(--green);
+  outline-offset: 5px;
+  border-radius: 8px;
+}
+.thoughts-page-summary {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.8;
+  font-variant-numeric: tabular-nums;
+}
+.thoughts-pagination {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px 16px;
+  margin-top: 22px;
+  padding: 18px 0 4px;
+  border-top: 1px solid var(--line);
+  min-width: 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+.thoughts-pagination:first-child {
+  margin-top: 0;
+  padding-top: 0;
+  border-top: 0;
+}
+.thoughts-page-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-width: 0;
+}
+.thoughts-pagination .button,
+.thoughts-pagination button {
+  min-height: 44px;
+  padding: 10px 16px;
+  font-size: 13px;
+  line-height: 1.6;
+}
+.thoughts-pagination label {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-width: 0;
+}
+.thoughts-pagination select {
+  min-height: 44px;
+  min-width: 76px;
+  max-width: 100%;
+  padding: 9px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--ink);
+  font-size: 14px;
+}
+.thoughts-pagination button:disabled {
+  opacity: .45;
+  cursor: default;
+}
+.thoughts-panel .blog-sync-note {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 16px;
+  margin: -6px 0 18px;
+  padding: 0 2px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.9;
+  min-width: 0;
+}
+.thoughts-panel .blog-sync-note > span {
+  flex: 1 1 260px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.thoughts-panel .blog-sync-note .text-button {
+  flex: 0 0 auto;
+  min-height: 44px;
+  color: var(--green);
+  font-size: 12px;
+}
+@media (max-width: 600px) {
+  .thoughts-list-top {
+    scroll-margin-top: 84px;
+  }
+  .thoughts-panel .thoughts-card {
+    padding: 22px 20px;
+    border-radius: 12px;
+  }
+  .thoughts-panel .thoughts-card-heading h3 {
+    font-size: 21px;
+    margin: 10px 0 0;
+  }
+  .thoughts-panel .thoughts-card-meta {
+    gap: 3px 12px;
+  }
+  .thoughts-panel .thoughts-body {
+    margin-top: 15px;
+    font-size: 15px;
+    line-height: 1.95;
+  }
+  .thoughts-panel .thoughts-card-actions {
+    gap: 6px 12px;
+    margin-top: 18px;
+    padding-top: 10px;
+  }
+  .thoughts-panel .thoughts-card-actions > div {
+    gap: 4px 16px;
+  }
+  .thoughts-pagination {
+    gap: 10px;
+    justify-content: space-between;
+  }
+  .thoughts-page-controls {
+    width: 100%;
+    justify-content: space-between;
+  }
+  .thoughts-pagination .button,
+  .thoughts-pagination button {
+    padding: 10px 12px;
+  }
+  .thoughts-pagination label {
+    gap: 6px;
+    font-size: 12px;
+  }
+  .thoughts-pagination select {
+    font-size: 16px;
+    padding: 9px 8px;
+  }
+  .thoughts-panel .blog-sync-note {
+    gap: 0 12px;
+    margin-bottom: 14px;
+  }
+}
