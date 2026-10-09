@@ -63,12 +63,20 @@ try {
     await page.getByRole("navigation", { name: "主导航" }).getByRole("button", { name: /^影音/ }).click();
     await page.locator(".media-title").scrollIntoViewIfNeeded();
     await page.waitForFunction(() => {
-      const images = [...document.querySelectorAll(".media-title-art img")];
+      const images = [...document.querySelectorAll(".media-title .media-title-art img")];
+      return images.length === 1 && images.every(image => image.naturalWidth > 0);
+    }, undefined, { timeout: 45_000 });
+    await page.locator(".media-title").click();
+    const detail = page.getByRole("dialog", { name: "影音详情", exact: true });
+    await detail.waitFor();
+    await page.waitForFunction(() => {
+      const images = [...document.querySelectorAll(".media-title .media-title-art img, dialog[open] .media-title-art img")];
       return images.length === 2 && images.every(image => image.naturalWidth > 0);
     }, undefined, { timeout: 45_000 });
+    await detail.getByRole("button", { name: "关闭影音详情", exact: true }).click();
   };
   await openMedia();
-  const result = await page.locator(".media-title-art img").first().evaluate(image => ({ width: image.naturalWidth, height: image.naturalHeight, route: image.src.startsWith("blob:") ? "blob" : "worker" }));
+  const result = await page.locator(".media-title .media-title-art img").first().evaluate(image => ({ width: image.naturalWidth, height: image.naturalHeight, route: image.src.startsWith("blob:") ? "blob" : "worker" }));
   const firstDownloads = workerDownloads;
   await openMedia();
   if (workerDownloads !== firstDownloads) throw new Error("The cached public poster was downloaded again after reload.");

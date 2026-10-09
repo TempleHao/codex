@@ -104,8 +104,15 @@ async function persisted(page: Page): Promise<StoredWorkspace | null> {
   const raw = await rawStorage(page);
   return raw === null ? null : JSON.parse(raw);
 }
+async function ensureMediaSettingsOpen(page: Page) {
+  const settings = page.locator("details.media-settings");
+  if (await settings.count() && !await settings.evaluate(node => (node as HTMLDetailsElement).open)) {
+    await settings.locator(":scope > summary").click();
+  }
+}
 async function selectView(page: Page, name: string) {
   await page.getByRole("navigation", { name: "主导航" }).getByRole("button", { name: new RegExp(`^${name}`) }).click();
+  if (name === "影音") await ensureMediaSettingsOpen(page);
 }
 async function openMedia(page: Page, options: { https?: boolean; seed?: StoredWorkspace } = {}) {
   if (options.https) {
@@ -123,7 +130,19 @@ async function openMedia(page: Page, options: { https?: boolean; seed?: StoredWo
     await expect(page.getByRole("button", { name: "导出备份", exact: true })).toBeEnabled();
   }
   await selectView(page, "影音");
-  await expect(page.getByRole("heading", { name: "看过的世界，留在生活里。", exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "故事，也是人生的线头。", exact: true })).toBeVisible();
+}
+async function openMediaDetail(page: Page, title: string) {
+  const detail = page.getByRole("dialog", { name: "影音详情", exact: true });
+  if (!await detail.isVisible()) await page.locator(".media-title").filter({ hasText: title }).first().click();
+  await expect(detail).toBeVisible();
+  await expect(detail).toContainText(title);
+  return detail;
+}
+async function closeMediaDetail(page: Page) {
+  const detail = page.getByRole("dialog", { name: "影音详情", exact: true });
+  if (await detail.isVisible()) await detail.getByRole("button", { name: "关闭影音详情", exact: true }).click();
+  await expect(detail).not.toBeVisible();
 }
 async function expectNoHorizontalOverflow(page: Page) {
   const dimensions = await page.evaluate(() => ({ width: innerWidth, documentWidth: document.documentElement.scrollWidth, bodyWidth: document.body.scrollWidth }));
@@ -330,6 +349,7 @@ test("旧片单凭公开 Client ID 修复海报，补图期间的新评分感想
   expect(trakt.apiCalls).toEqual([]);
 
   // A delayed summary must patch the latest entry, not overwrite it with a stale copy.
+  await openMediaDetail(page, "原来的片名");
   await page.getByRole("button", { name: "编辑记录与感想", exact: true }).click();
   const form = page.getByRole("form", { name: "影音记录表单", exact: true });
   const thought = "补图期间新写下的感想仍属于我。";
@@ -345,6 +365,7 @@ test("旧片单凭公开 Client ID 修复海报，补图期间的新评分感想
   expect(patched?.life.board).toEqual(before.life.board);
   expect(patched?.life.thoughts).toEqual(before.life.thoughts);
   expect(await connectionRecord(page)).toBeNull();
+  await closeMediaDetail(page);
   const card = page.locator(".media-title").filter({ hasText: "原来的片名" });
   await card.scrollIntoViewIfNeeded();
   await expect(card.locator("[data-poster-state=loaded]")).toHaveCount(1);
@@ -395,7 +416,9 @@ test("手动电影保存本人评分和感想，只有实际观看日期形成�
   const statusOnly = await persisted(page);
   expect(statusOnly?.life.media.entries[0]).toMatchObject({ title, kind: "movie", status: "watched", rating: 8.5, thought, history: [] });
   expect(statusOnly?.life.board.observations).toEqual([]);
-  await expect(page.getByLabel("影音概览")).toContainText("有日期的观看0次");
+  await closeMediaDetail(page);
+  await expect(page.getByLabel("影音概览")).toContainText("观看日0天");
+  await openMediaDetail(page, title);
   await page.getByRole("button", { name: "编辑记录与感想", exact: true }).click();
   await expect(form.getByRole("textbox", { name: "我的感想", exact: true })).toHaveValue(thought);
   await form.getByLabel(/^追加一次观看日期/).fill("2025-06-18");
@@ -405,8 +428,10 @@ test("手动电影保存本人评分和感想，只有实际观看日期形成�
   expect(dated?.life.media.entries[0].history).toHaveLength(1);
   expect(dated?.life.media.entries[0].history[0].watchedAt).toBe("2025-06-18");
   expect(dated?.life.board.observations).toEqual([]);
-  await expect(page.getByRole("img", { name: /^2025年各月观看次数/ })).toHaveAttribute("aria-label", /6月1次/);
+  await closeMediaDetail(page);
+  await expect(page.getByRole("img", { name: /^2025年各月观看日/ })).toHaveAttribute("aria-label", /6月1天/);
   await expectNoTasks(page);
+  await openMediaDetail(page, title);
   await page.getByRole("button", { name: "留在人生看板", exact: true }).click();
   await expect(page.locator(".media-panel")).toContainText("这份影音感受已留在人生看板");
   const remembered = await persisted(page);
@@ -417,7 +442,7 @@ test("手动电影保存本人评分和感想，只有实际观看日期形成�
   await expect(page.getByRole("button", { name: "导出备份", exact: true })).toBeEnabled();
   await expect(page.locator(".life-timeline-content")).toContainText(thought);
   await selectView(page, "影音");
-  await expect(page.getByLabel("影音详情")).toContainText(title);
+  await openMediaDetail(page, title);
   await expect(page.locator(".media-thought")).toHaveText(thought);
   expect((await persisted(page))?.life).toEqual(remembered?.life);
   await expectNoTasks(page);
@@ -434,7 +459,7 @@ test("真实浏览器 PKCE 回跳先预览后合并，旧阅读看板感想保�
   expect(trakt.tokenCalls).toBe(1);
   expect(trakt.apiCalls).toEqual([...ENDPOINTS]);
   expect(await rawStorage(page)).toBe(rawBefore);
-  await expect(page.locator(".trakt-preview")).toContainText("6 个作品条目 · 2 次有日期的观看 · 3 项本人评分");
+  await expect(page.locator(".trakt-preview")).toContainText("5 部作品 · 1 条单集记录 · 2 次有日期的观看 · 3 项本人评分");
   const secrets = [AUTHORIZATION_CODE, ACCESS_TOKEN, REFRESH_TOKEN, ...trakt.states, ...trakt.verifiers];
   await expectAuthorizationCleared(page, secrets);
   await page.getByRole("button", { name: "保存到影音", exact: true }).click();
@@ -630,6 +655,7 @@ test("390px 手机中的五个主导航排成一行，长片名与感想保存�
   await expect(form).not.toBeVisible();
   await expectNoHorizontalOverflow(page);
   expect((await persisted(page))?.life.media.entries[0]).toMatchObject({ title, thought, rating: 0, status: "wanted", history: [] });
+  await openMediaDetail(page, title);
   await page.getByRole("button", { name: "编辑记录与感想", exact: true }).click();
   await expect(form.getByRole("textbox", { name: "我的感想", exact: true })).toHaveValue(thought);
   await expectNoHorizontalOverflow(page);
@@ -637,12 +663,87 @@ test("390px 手机中的五个主导航排成一行，长片名与感想保存�
   await page.reload();
   await expect(page.getByRole("button", { name: "导出备份", exact: true })).toBeEnabled();
   await selectView(page, "影音");
+  await openMediaDetail(page, title);
   await expect(page.locator(".media-thought")).toHaveText(thought);
   await expectNoHorizontalOverflow(page);
   await expectNoTasks(page);
   await page.screenshot({ path: "/tmp/life-media-mobile.png", fullPage: true });
 });
 
+
+test("多季单集投影为一部剧，上海观看日去重，折叠记录可编辑且原始资料保持完整", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  const seed = originalState();
+  const title = "沿途的生活";
+  const parent = { id: "manual:series", kind: "show" as const, title, genres: ["drama"], status: "watching" as const, rating: 8, thought: "整部剧自己的评分与感想。", history: [] };
+  const episodes = [
+    { id: "manual:s1e1", kind: "episode" as const, title: "抵达之前", showId: parent.id, season: 1, episode: 1, genres: [], status: "watched" as const, rating: 1, thought: "第一集的独立感想。", history: [{ id: "view:1", watchedAt: "2025-06-17T16:30:00Z" }, { id: "view:1-again", watchedAt: "2025-06-18T03:00:00Z" }] },
+    { id: "manual:s1e2", kind: "episode" as const, title: "雨中的告别", showId: parent.id, season: 1, episode: 2, genres: [], status: "watched" as const, rating: 2, thought: "第二集的独立感想。", history: [{ id: "view:2", watchedAt: "2025-06-18T12:00:00Z" }] },
+    { id: "manual:s2e1", kind: "episode" as const, title: "再次出发", showId: parent.id, season: 2, episode: 1, genres: [], status: "watched" as const, rating: 3, thought: "第二季的独立感想。", history: [{ id: "view:3", watchedAt: "2025-06-18T16:30:00Z" }] },
+  ];
+  seed.life.media.entries = [parent, ...episodes];
+  await openMedia(page, { seed });
+  const rawBefore = await rawStorage(page);
+  await expect(page.getByRole("dialog", { name: "影音详情" })).not.toBeVisible();
+  await expect(page.locator(".media-recent li .media-title")).toHaveCount(1);
+  await expect(page.locator(".media-recent li")).toContainText(title);
+  await expect(page.getByLabel("影音概览")).toContainText("看过剧集1部");
+  await expect(page.getByLabel("影音概览")).toContainText("观看日2天");
+  await expect(page.getByRole("img", { name: /^2025年各月观看日/ })).toHaveAttribute("aria-label", /6月2天/);
+  await expectNoHorizontalOverflow(page);
+  await page.locator(".media-settings > summary").click();
+  await page.screenshot({ path: "/tmp/life-media-review-mobile.png", fullPage: true });
+  await page.getByRole("button", { name: "片单", exact: true }).click();
+  await expect(page.locator(".media-title")).toHaveCount(1);
+  await expect(page.locator(".media-title")).toContainText("我的评分 8/10");
+  await expect(page.getByLabel("筛选影音类型").locator("option[value=episode]")).toHaveCount(0);
+  await page.getByRole("textbox", { name: "搜索影音", exact: true }).fill("雨中的告别");
+  await expect(page.locator(".media-title")).toHaveCount(1);
+  await expect(page.locator(".media-title")).toContainText(title);
+  const detail = await openMediaDetail(page, title);
+  await expect(detail.locator(".media-own-rating")).toContainText("8");
+  const seasons = detail.locator("details").filter({ has: page.locator("summary", { hasText: /^分季观看记录/ }) }).first();
+  await expect(seasons).not.toHaveAttribute("open", "");
+  await expect(detail.getByRole("button", { name: "编辑第 1 季第 1 集", exact: true })).not.toBeVisible();
+  await seasons.locator(":scope > summary").click();
+  const firstSeason = seasons.locator("details").filter({ has: page.locator("summary", { hasText: /^第 1 季/ }) }).first();
+  const secondSeason = seasons.locator("details").filter({ has: page.locator("summary", { hasText: /^第 2 季/ }) }).first();
+  await expect(firstSeason).not.toHaveAttribute("open", "");
+  await expect(secondSeason).not.toHaveAttribute("open", "");
+  await firstSeason.locator(":scope > summary").click();
+  await expect(firstSeason).toContainText("抵达之前");
+  await expect(firstSeason).toContainText("第一集的独立感想。");
+  await expect(firstSeason.locator("time[datetime]" )).toHaveCount(3);
+  await expect(firstSeason.locator('time[datetime="2025-06-17T16:30:00Z"]')).toBeVisible();
+  await secondSeason.locator(":scope > summary").click();
+  await expect(secondSeason).toContainText("再次出发");
+  await expect(secondSeason).toContainText("第二季的独立感想。");
+  await expectNoHorizontalOverflow(page);
+  await page.screenshot({ path: "/tmp/life-media-series-mobile.png" });
+  expect(await rawStorage(page)).toBe(rawBefore);
+  await detail.getByRole("button", { name: "编辑第 1 季第 1 集", exact: true }).click();
+  await expect(detail).not.toBeVisible();
+  const form = page.getByRole("form", { name: "影音记录表单", exact: true });
+  await expect(form.getByRole("textbox", { name: "片名", exact: true })).toHaveValue(episodes[0].title);
+  await expect(form.getByRole("spinbutton", { name: "我的评分", exact: true })).toHaveValue("1");
+  await form.getByRole("spinbutton", { name: "我的评分", exact: true }).fill("4.5");
+  await form.getByRole("textbox", { name: "我的感想", exact: true }).fill("只更新第一集的感想。");
+  await form.getByRole("button", { name: "保存影音记录", exact: true }).click();
+  await expect(form).not.toBeVisible();
+  await expect(detail).toBeVisible();
+  await expect(detail).toContainText(title);
+  const saved = await persisted(page);
+  expect(saved?.life.media.entries).toEqual([parent, { ...episodes[0], rating: 4.5, thought: "只更新第一集的感想。" }, episodes[1], episodes[2]]);
+  await expect(detail.locator(".media-own-rating")).toContainText("8");
+  await expectNoHorizontalOverflow(page);
+  await closeMediaDetail(page);
+  await page.getByRole("textbox", { name: "搜索影音", exact: true }).fill("");
+  await page.getByRole("button", { name: "感想", exact: true }).click();
+  await expect(page.locator(".media-feeling-card")).toHaveCount(1);
+  await expect(page.locator(".media-feeling-card")).toContainText(title);
+  await expect(page.locator(".media-feeling-card")).toContainText("只更新第一集的感想。");
+  await expectNoTasks(page);
+});
 
 test("海报从官方来源缓存为Blob，同一图片不重复下载，刷新复用缓存，失败可重试且备份不含图片内容", async ({ page, context }) => {
   const before = originalState();
@@ -670,8 +771,9 @@ test("海报从官方来源缓存为Blob，同一图片不重复下载，刷新�
   });
   await openMedia(page, { seed: before });
   const rawBefore = await rawStorage(page);
-  const loaded = page.locator(".media-title-art img");
-  await expect(loaded).toHaveCount(3); // Two cards plus the selected item's detail.
+  await page.getByRole("button", { name: "片单", exact: true }).click();
+  const loaded = page.locator(".media-title .media-title-art img");
+  await expect(loaded).toHaveCount(2);
   await page.locator(".media-title").filter({ hasText: "可重试海报的电影" }).scrollIntoViewIfNeeded();
   await expect(page.locator("[data-poster-failed]")).toHaveCount(1);
   expect(downloads[poster]).toBe(1);
@@ -681,17 +783,24 @@ test("海报从官方来源缓存为Blob，同一图片不重复下载，刷新�
     expect(await img.getAttribute("src")).toMatch(/^blob:/);
     await expect.poll(() => img.evaluate(node => (node as HTMLImageElement).naturalWidth)).toBe(2);
   }
+  await openMediaDetail(page, "原来的片名");
+  const detailImage = page.getByRole("dialog", { name: "影音详情" }).locator(".media-title-art img");
+  await expect(detailImage).toHaveAttribute("src", /^blob:/);
+  await expect.poll(() => detailImage.evaluate(node => (node as HTMLImageElement).naturalWidth)).toBe(2);
+  expect(downloads[poster]).toBe(1);
+  await closeMediaDetail(page);
   expect(await rawStorage(page)).toBe(rawBefore);
   allowRetry = true;
   await page.getByRole("button", { name: "修复海报", exact: true }).click();
   await expect(page.locator("[data-poster-failed]")).toHaveCount(0);
-  await expect(loaded).toHaveCount(4);
+  await expect(loaded).toHaveCount(3);
   expect(downloads[poster]).toBe(1);
   expect(downloads[retryPoster]).toBe(failedDownloads + 1);
   await page.reload();
   await expect(page.getByRole("button", { name: "导出备份", exact: true })).toBeEnabled();
   await selectView(page, "影音");
-  await expect(loaded).toHaveCount(4);
+  await page.getByRole("button", { name: "片单", exact: true }).click();
+  await expect(loaded).toHaveCount(3);
   expect(downloads[poster]).toBe(1);
   expect(downloads[retryPoster]).toBe(failedDownloads + 1);
   expect(await rawStorage(page)).toBe(rawBefore);

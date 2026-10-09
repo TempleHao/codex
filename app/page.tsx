@@ -14,6 +14,7 @@ import WeReadSync from "@/components/WeReadSync";
 import MediaPanel from "@/components/MediaPanel";
 import { useTraktAutoSync } from "@/components/useTraktAutoSync";
 import { mergeMediaLibraries } from "@/lib/media";
+import { mediaWorkCount } from "@/lib/media-view";
 import { clearPosterWorkerCache } from "@/lib/poster-worker-client";
 import { clearMediaPosterCache } from "@/lib/media-posters";
 import type { MediaEntry, MediaLibrary } from "@/lib/media";
@@ -147,7 +148,7 @@ export default function Home() {
 
   const isToday = (task: Task) => task.status === "todo" && (task.plannedDate === today || Boolean(task.dueDate && task.dueDate <= today));
   const isInbox = (task: Task) => task.status === "todo" && ((!task.plannedDate && !task.dueDate) || task.needsClarification.some(item => item.trim()));
-  const counts: Record<View, number> = { today: data.tasks.filter(isToday).length, inbox: data.tasks.filter(isInbox).length, all: data.tasks.filter(t => t.status === "todo").length, done: data.tasks.filter(t => t.status === "done").length, reading: life.reading.books.length, media: life.media.entries.filter(entry => entry.kind !== "episode").length, thoughts: life.thoughts.length, life: life.board.threads.filter(thread => thread.state === "active").length };
+  const counts: Record<View, number> = { today: data.tasks.filter(isToday).length, inbox: data.tasks.filter(isInbox).length, all: data.tasks.filter(t => t.status === "todo").length, done: data.tasks.filter(t => t.status === "done").length, reading: life.reading.books.length, media: mediaWorkCount(life.media.entries), thoughts: life.thoughts.length, life: life.board.threads.filter(thread => thread.state === "active").length };
   const tasks = data.tasks.filter(task => view === "today" ? isToday(task) : view === "inbox" ? isInbox(task) : view === "done" ? task.status === "done" : task.status === "todo")
     .filter(task => area === "all" || task.area === area)
     .filter(task => `${task.title} ${task.notes} ${task.sourceExcerpt} ${task.needsClarification.join(" ")}`.toLocaleLowerCase().includes(search.toLocaleLowerCase()))
