@@ -369,7 +369,16 @@ function Workbench() {
     <aside className="sidebar">
       <a href={`${APP_BASE_PATH}/`} className="brand" aria-label="有序首页"><span className="brand-mark"><Icon name="leaf" size={24}/></span><span>有序<small>人生工作台</small></span></a>
       <div className="sidebar-heading">我的空间</div>
-      <nav className="navigation" aria-label="主导航">{NAV.map(item => <button key={item.id} className={`nav-item ${(view === item.id || (item.id === "all" && taskView)) ? "active" : ""}`} aria-current={view === item.id || (item.id === "all" && taskView) ? "page" : undefined} disabled={lifeSaving || restoring || clearing} onClick={() => selectView(item.id)}><Icon name={item.icon}/><span>{item.title}</span>{item.id !== "life" && <small>{loading ? "·" : counts[item.id]}</small>}</button>)}</nav>
+      <nav className="navigation" aria-label="主导航">{NAV.map(item => {
+        const count = !loading && item.id !== "life" ? counts[item.id] : 0;
+        const pending = item.id === "all" && count > 0;
+        return <button key={item.id} className={`nav-item ${(view === item.id || (item.id === "all" && taskView)) ? "active" : ""}`} aria-label={item.title} aria-describedby={pending ? "nav-pending-description" : undefined} aria-current={view === item.id || (item.id === "all" && taskView) ? "page" : undefined} disabled={lifeSaving || restoring || clearing} onClick={() => selectView(item.id)}>
+          <Icon name={item.icon}/>
+          <span className="nav-label"><span className="nav-label-text">{item.title}</span>{pending && <span className="nav-pending-badge" aria-hidden="true">{count > 99 ? "99+" : count}</span>}</span>
+          {count > 0 && <small className="nav-total" aria-hidden="true">{count}</small>}
+          {pending && <span id="nav-pending-description" className="visually-hidden">{count} 项未完成事务</span>}
+        </button>;
+      })}</nav>
       <div className="sidebar-note"><span className="tiny-star">✳</span><p>生活的线头，慢慢理清。<br/>看见经历，也看见自己。</p><span className="note-line"/></div>
       <div className="sidebar-bottom"><span className="save-dot"/>个人看板<span className="version">v{APP_VERSION}</span></div>
     </aside>
