@@ -1,5 +1,8 @@
+import { readWorkspaceRevision, workspaceFingerprint, writeWorkspaceRevision } from "./workspace-revision";
+
 /** Local workspace encryption. Only ciphertext is persistent; the session key is memory-only. */
 export const WORKSPACE_STORAGE_KEY = "life-workbench-preview-v1";
+export const WORKSPACE_WRITE_UNSUPPORTED = "此浏览器不支持跨页面安全保存，未保存本次内容。请升级到较新的浏览器；仍可解锁并导出备份。";
 const FORMAT = "life-workbench-encrypted";
 const ITERATIONS = 310_000;
 const MAX_PLAINTEXT_BYTES = 20_000_000;
@@ -49,6 +52,48 @@ function writeRaw(storage: Storage, raw: string): void {
     }
     throw new Error("浏览器禁止保存本机记录，未保存本次内容，原数据仍保留。");
   }
+}
+
+// A Web Lock orders callbacks, but another renderer may still hold an older
+// localStorage cache. IndexedDB confirms which ciphertext actually committed.
+async function committedRaw(storage: Storage, expected: number): Promise<string | null> {
+  const fingerprint = await readWorkspaceRevision();
+  const deadline = Date.now() + 2_000;
+  do {
+    assertEpoch(expected);
+    const raw = readRaw(storage);
+    if (raw === null) return null;
+    const current = await workspaceFingerprint(raw);
+    if (fingerprint === null) {
+      await writeWorkspaceRevision(current);
+      return raw;
+    }
+    if (current === fingerprint) return raw;
+    await new Promise<void>(resolve => setTimeout(resolve, 25));
+  } while (Date.now() < deadline);
+  throw new Error("本机记录的保存版本尚未同步，未保存本次内容，草稿已保留。请刷新后重试；仍无法保存时请先导出备份。");
+}
+
+async function commitRaw(storage: Storage, before: string | null, next: string, expected: number): Promise<void> {
+  const fingerprint = await workspaceFingerprint(next);
+  assertUnchanged(storage, before, expected);
+  writeRaw(storage, next);
+  try {
+    await writeWorkspaceRevision(fingerprint);
+  } catch (error) {
+    // A failed marker transaction leaves the old marker intact. Restore only our
+    // own write: a reset or an external replacement must never be overwritten.
+    if (epoch === expected && readRaw(storage) === next) {
+      try {
+        if (before === null) storage.removeItem(WORKSPACE_STORAGE_KEY);
+        else writeRaw(storage, before);
+      } catch {
+        throw new Error("本机保存版本确认失败，无法恢复先前记录。请先导出备份，再刷新检查；暂时不要继续保存。");
+      }
+    }
+    throw error;
+  }
+  assertEpoch(expected);
 }
 
 function encode(bytes: Uint8Array): string {
@@ -185,10 +230,11 @@ function serialized<T>(operation: () => Promise<T>): Promise<T> {
   return result;
 }
 
-async function exclusive<T>(operation: () => Promise<T>): Promise<T> {
+async function exclusive<T>(operation: () => Promise<T>, options: { readOnly?: boolean } = {}): Promise<T> {
   if (typeof navigator !== "undefined" && navigator.locks?.request) {
     return navigator.locks.request(WORKSPACE_STORAGE_KEY, { mode: "exclusive" }, operation);
   }
+  if (!options.readOnly) throw new Error(WORKSPACE_WRITE_UNSUPPORTED);
   return operation();
 }
 
@@ -211,7 +257,7 @@ export function setupWorkspaceLock(password: string): Promise<void> {
     const encodedSalt = encode(salt);
     const encrypted = await encrypt(record.raw ?? EMPTY_WORKSPACE, key, encodedSalt);
     assertUnchanged(storage, record.raw, expected);
-    writeRaw(storage, encrypted);
+    await commitRaw(storage, record.raw, encrypted, expected);
     session = { key, salt: encodedSalt };
     lastError = undefined;
     notify();
@@ -234,7 +280,7 @@ export function unlockWorkspace(password: string): Promise<void> {
     session = { key, salt: record.envelope.salt };
     lastError = undefined;
     notify();
-  })).catch(error => { notify(); throw error; });
+  }, { readOnly: true })).catch(error => { notify(); throw error; });
 }
 
 export function lockWorkspace(): void { forgetSession(); lastError = undefined; notify(); }
@@ -258,14 +304,15 @@ class ScratchStorage implements Storage {
   clear(): void { this.entries.clear(); }
 }
 
-export function withUnlockedWorkspace<T>(operation: (storage: Storage) => T | Promise<T>): Promise<T> {
+export function withUnlockedWorkspace<T>(operation: (storage: Storage) => T | Promise<T>, options: { readOnly?: boolean } = {}): Promise<T> {
   const expected = epoch;
   const active = session;
   return serialized(() => exclusive(async () => {
     assertEpoch(expected);
-    const storage = browserStorage();
-    const raw = readRaw(storage);
     if (!active || session !== active) throw new Error(LOCKED);
+    const storage = browserStorage();
+    const raw = options.readOnly ? readRaw(storage) : await committedRaw(storage, expected);
+    if (session !== active) throw new Error(LOCKED);
     const record = inspect(raw);
     if (record.kind !== "encrypted" || record.envelope.salt !== active.salt) {
       forgetSession(); notify(); throw new Error(CHANGED);
@@ -279,11 +326,12 @@ export function withUnlockedWorkspace<T>(operation: (storage: Storage) => T | Pr
       assertEpoch(expected);
       const next = scratch.getItem(WORKSPACE_STORAGE_KEY) ?? EMPTY_WORKSPACE;
       if (next !== plaintext) {
+        if (options.readOnly) throw new Error("只读操作不能修改本机记录。");
         const encrypted = await encrypt(next, active.key, active.salt);
         assertUnchanged(storage, record.raw, expected);
-        writeRaw(storage, encrypted);
+        await commitRaw(storage, record.raw, encrypted, expected);
       } else { assertUnchanged(storage, record.raw, expected); }
       return result;
     } finally { scratch?.clear(); plaintext = ""; }
-  }));
+  }, options));
 }

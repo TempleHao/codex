@@ -7,16 +7,16 @@
 }
 .thoughts-panel .thoughts-layout:not(.thoughts-layout-editing) {
   width: 100%;
-  max-width: 900px;
+  max-width: 820px;
   margin-inline: auto;
 }
 .thoughts-panel .thoughts-card {
-  padding: 28px 30px;
-  border-radius: 14px;
-  box-shadow: 0 2px 9px #263b3204;
+  padding: var(--card-padding);
+  border-radius: var(--radius-card);
+  box-shadow: var(--shadow-card);
 }
 .thoughts-panel .thoughts-card-heading h3 {
-  font-size: 22px;
+  font-size: var(--heading-section);
   line-height: 1.65;
   margin: 12px 0 0;
 }
@@ -24,7 +24,7 @@
   gap: 5px 14px;
   margin-top: 0;
   color: var(--muted);
-  font-size: 12px;
+  font-size: var(--text-xs);
   line-height: 1.9;
   overflow-wrap: anywhere;
 }
@@ -38,9 +38,9 @@
 }
 .thoughts-panel .thoughts-body {
   margin-top: 18px;
-  font-size: 15px;
+  font-size: var(--text-base);
   line-height: 2;
-  letter-spacing: .015em;
+  letter-spacing: .01em;
 }
 .thoughts-panel .thoughts-card-actions {
   gap: 8px 18px;
@@ -59,7 +59,7 @@
   line-height: 1.6;
 }
 .thoughts-panel .thoughts-card-actions .thoughts-transaction-tools {
-  font-size: 12px;
+  font-size: var(--text-xs);
 }
 .thoughts-panel .thoughts-source {
   margin-top: 18px;
@@ -78,7 +78,7 @@
 .thoughts-page-summary {
   margin: 0;
   color: var(--muted);
-  font-size: 12px;
+  font-size: var(--text-xs);
   line-height: 1.8;
   font-variant-numeric: tabular-nums;
 }
@@ -93,7 +93,7 @@
   border-top: 1px solid var(--line);
   min-width: 0;
   color: var(--muted);
-  font-size: 13px;
+  font-size: var(--text-sm);
 }
 .thoughts-pagination:first-child {
   margin-top: 0;
@@ -112,7 +112,7 @@
 .thoughts-pagination button {
   min-height: 44px;
   padding: 10px 16px;
-  font-size: 13px;
+  font-size: var(--text-sm);
   line-height: 1.6;
 }
 .thoughts-pagination label {
@@ -146,7 +146,7 @@
   margin: -6px 0 18px;
   padding: 0 2px;
   color: var(--muted);
-  font-size: 12px;
+  font-size: var(--text-xs);
   line-height: 1.9;
   min-width: 0;
 }
@@ -159,18 +159,18 @@
   flex: 0 0 auto;
   min-height: 44px;
   color: var(--green);
-  font-size: 12px;
+  font-size: var(--text-xs);
 }
 @media (max-width: 600px) {
   .thoughts-list-top {
     scroll-margin-top: 84px;
   }
   .thoughts-panel .thoughts-card {
-    padding: 22px 20px;
-    border-radius: 12px;
+    padding: 22px 18px;
+    border-radius: var(--radius-card);
   }
   .thoughts-panel .thoughts-card-heading h3 {
-    font-size: 21px;
+    font-size: var(--heading-section);
     margin: 10px 0 0;
   }
   .thoughts-panel .thoughts-card-meta {
@@ -178,7 +178,7 @@
   }
   .thoughts-panel .thoughts-body {
     margin-top: 15px;
-    font-size: 15px;
+    font-size: var(--text-base);
     line-height: 1.95;
   }
   .thoughts-panel .thoughts-card-actions {
@@ -203,7 +203,7 @@
   }
   .thoughts-pagination label {
     gap: 6px;
-    font-size: 12px;
+    font-size: var(--text-xs);
   }
   .thoughts-pagination select {
     font-size: 16px;
@@ -214,3 +214,122 @@
     margin-bottom: 14px;
   }
 }
+
+/* Scope typography so shared reading styles cannot shrink the timeline. */
+.thoughts-panel { font-size: var(--text-base); }
+.thoughts-panel .thoughts-heading > p:last-child {
+  font-size: var(--text-base);
+  line-height: 1.85;
+}
+.thoughts-panel .thoughts-timeline-tools {
+  gap: 12px;
+  padding: 14px 16px;
+  border-radius: 14px;
+  align-items: center;
+}
+.thoughts-panel .thoughts-source-filter { gap: 4px; }
+.thoughts-panel .thoughts-source-filter button {
+  min-height: 44px;
+  padding: 10px 14px;
+  border-radius: 10px;
+  font-size: var(--text-sm);
+}
+.thoughts-panel .thoughts-search {
+  flex: 1 1 220px;
+  min-height: 44px;
+  padding-inline: 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface);
+}
+.thoughts-panel .thoughts-search:focus-within { border-color: var(--green); }
+.thoughts-panel .thoughts-search input {
+  min-height: 44px;
+  font-size: var(--text-sm);
+  color: var(--ink);
+}
+.thoughts-panel .thoughts-timeline-tools select {
+  min-height: 44px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  font-size: var(--text-sm);
+}
+.thoughts-panel .thoughts-body {
+  max-width: 48em;
+  color: var(--ink);
+}
+.thoughts-panel .thoughts-card-heading h3 { font-weight: 500; }
+.thoughts-panel .thoughts-source {
+  border-radius: 12px;
+  font-size: var(--text-sm);
+  line-height: 1.9;
+}
+.thoughts-panel .thoughts-source summary,
+.thoughts-panel .thoughts-source-fields summary {
+  min-height: 44px;
+  padding-block: 10px;
+  cursor: pointer;
+  line-height: 1.8;
+}
+.thoughts-panel .thoughts-source blockquote {
+  max-width: 48em;
+  font-size: var(--text-base);
+  line-height: 2;
+}
+.thoughts-panel .thoughts-source > a { min-height: 44px; }
+.thoughts-panel .thoughts-editor {
+  padding: var(--card-padding);
+  border-radius: var(--radius-card);
+}
+.thoughts-panel .thoughts-editor-heading h3 {
+  font-size: var(--heading-section);
+  line-height: 1.6;
+  color: var(--ink);
+}
+.thoughts-panel .field { font-size: var(--text-sm); }
+.thoughts-panel .field :is(input, select, textarea) {
+  min-height: 44px;
+  font-size: var(--text-base);
+}
+.thoughts-panel .field textarea { line-height: 1.9; }
+.thoughts-panel .thoughts-form-actions { flex-wrap: wrap; }
+.thoughts-panel .thoughts-form-actions > .button,
+.thoughts-panel .thoughts-intro > .button,
+.thoughts-panel .thoughts-card-actions > .thoughts-transaction-tools > .button {
+  min-height: 44px;
+  font-size: var(--text-sm);
+}
+.thoughts-panel .thoughts-card-actions { flex-wrap: wrap; }
+.thoughts-panel .thoughts-page-summary { font-size: var(--text-sm); }
+@media (max-width: 600px) {
+  .thoughts-panel .thoughts-timeline-tools { padding: 12px; gap: 10px; }
+  .thoughts-panel .thoughts-search { flex-basis: 100%; order: -1; }
+  .thoughts-panel .thoughts-source-filter { flex: 1 1 100%; }
+  .thoughts-panel .thoughts-source-filter button { flex: 1; padding-inline: 10px; }
+  .thoughts-panel .thoughts-timeline-tools select { flex: 1; }
+  .thoughts-panel .thoughts-search input,
+  .thoughts-panel .thoughts-timeline-tools select,
+  .thoughts-panel .field :is(input, select, textarea) { font-size: 16px; }
+  .thoughts-panel .thoughts-card-actions > .thoughts-transaction-tools {
+    margin-left: 0;
+    max-width: 100%;
+    text-align: left;
+  }
+  .thoughts-panel .thoughts-pagination label { font-size: var(--text-xs); }
+}
+@media (max-width: 380px) {
+  .thoughts-panel .thoughts-page-controls { gap: 6px; }
+  .thoughts-panel .thoughts-pagination button { padding-inline: 10px; }
+  .thoughts-panel .thoughts-pagination label { gap: 4px; }
+  .thoughts-panel .thoughts-pagination select { min-width: 66px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .thoughts-panel *, .thoughts-panel *::before, .thoughts-panel *::after {
+    animation: none;
+    transition: none;
+    scroll-behavior: auto;
+  }
+}
+
+.thoughts-panel .thoughts-heading h2 { font-size: var(--heading-page); line-height: 1.4; letter-spacing: .025em; }
+@media (max-width: 640px) { .thoughts-panel .thoughts-heading h2 { font-size: 32px; } }

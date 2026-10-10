@@ -8,7 +8,7 @@
 
 [打开网页](https://templehao.github.io/codex/) · [查看版本发布](https://github.com/TempleHao/codex/releases) · [更新记录](CHANGELOG.md) · [使用与部署文档](#文档导航) · [反馈问题](https://github.com/TempleHao/codex/issues)
 
-当前软件版本：**v0.5.1**，持续开发中。网页侧栏和页脚显示当前部署版本；备份格式的 v2 是数据格式编号，与软件版本独立。
+当前软件版本：**v0.5.2**，持续开发中。网页侧栏和页脚显示当前部署版本；备份格式的 v2 是数据格式编号，与软件版本独立。
 
 ## 可以用它做什么
 
@@ -23,15 +23,15 @@
 
 生活领域涵盖衣着、饮食、居住、出行、影音、阅读、思考、工作、健康、关系、财务等。目前支持支付宝账单回顾；健康监测、完整资产与预算管理、旅行规划等专用工具尚未实现。
 
-界面采用暖纸白、深绿与陶土色，搭配中文标题和书刊式卡片。手机底部导航只为未完成事务展示小胶囊数量：零项隐藏，超过 99 项显示「99+」；书籍、作品、思考和账单总量放在看板及模块中。电脑侧栏保留非零资料数量。使用本机字体，不加载第三方字体或统计脚本；日期按 `Asia/Shanghai` 解释。
+界面采用暖纸白、深绿与陶土色，搭配中文标题和书刊式卡片。各页面共享字号、圆角和间距规则，长文采用适合阅读的行宽；金额使用等宽数字对齐，手机表单避免输入时自动放大，主要操作提供至少 44px 的触达高度。手机底部导航只为未完成事务展示小胶囊数量：零项隐藏，超过 99 项显示「99+」；书籍、作品、思考和账单总量放在看板及模块中。电脑侧栏保留非零资料数量。使用本机字体，不加载第三方字体或统计脚本；日期按 `Asia/Shanghai` 解释。
 
 底栏角标语义参考 [Ant Design Mobile 的提醒徽标](https://github.com/ant-design/ant-design-mobile/blob/master/src/components/badge/index.zh.md)和 [Material 3 的动态信息徽标](https://github.com/androidx/androidx/blob/androidx-main/compose/material3/material3/src/commonMain/kotlin/androidx/compose/material3/Badge.kt)：只提示需要处理的信息。文字旁的胶囊布局与「99+」上限是本项目为六项窄屏导航采用的设计选择。
 
 ### 页面示例
 
-以下截图使用虚构演示资料，不会自动写入你的记录。个人工作台记录初始为空；公开博客归档会按需从本站读取。
+以下为 v0.5.2 页面截图，使用虚构演示资料，不会自动写入你的记录。个人工作台记录初始为空；公开博客归档会按需从本站读取。
 
-![电脑上的人生看板，展示生活线索与经历回顾](docs/assets/life-board-desktop.png)
+![电脑上的人生看板，汇集阅读、影音、思考与财务](docs/assets/life-board-desktop.png)
 
 [查看 iPhone 宽度的看板截图](docs/assets/life-board-mobile.png)
 

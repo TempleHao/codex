@@ -181,3 +181,27 @@
   .weread-sync-generated{padding:16px}.weread-sync-book-preview li{gap:9px}
 }
 @media(prefers-reduced-motion:reduce){.weread-sync button,.weread-sync-chevron{transition:none}}
+
+/* Sync settings use the same spacing and typography as the bookshelf. */
+.weread-sync > summary { padding: 20px var(--card-padding); }
+.weread-sync > summary strong { font-size: var(--text-lg); }
+.weread-sync > summary small, .weread-sync-field,
+.weread-sync .weread-sync-note, .weread-sync-status p { font-size: var(--text-sm); line-height: 1.85; }
+.weread-sync-body { padding: 0 var(--card-padding) var(--card-padding); }
+.weread-sync .weread-sync-intro { font-size: var(--text-base); }
+.weread-sync-preview h3 { font-size: var(--heading-section); }
+.weread-sync .weread-sync-text-button, .weread-sync-note-preview summary,
+.weread-sync-setup summary { min-height: 44px; }
+.weread-sync-book-preview strong { font-size: var(--text-sm); }
+.weread-sync-note-preview article p { font-size: var(--text-base); line-height: 1.95; }
+.weread-sync-counts { gap: 12px 24px; line-height: 1.8; }
+.weread-sync-setup code { font-size: var(--text-xs); }
+@media (max-width: 640px) {
+  .weread-sync > summary { padding: 20px 18px; }
+  .weread-sync-body { padding: 0 18px 20px; }
+  .weread-sync-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .weread-sync-actions button { padding: 10px 12px; line-height: 1.7; }
+}
+@media (max-width: 380px) {
+  .weread-sync-actions { grid-template-columns: minmax(0, 1fr); }
+}

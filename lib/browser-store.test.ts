@@ -579,6 +579,7 @@ describe("静态站点 request", () => {
     vi.stubEnv("NEXT_PUBLIC_PREVIEW_MODE", "true");
     vi.stubGlobal("window", { localStorage: storage });
     vi.stubGlobal("fetch", fetchSpy);
+    vi.stubGlobal("navigator", { locks: { request: async (_name: string, operation: () => unknown) => operation() } });
     vi.resetModules();
     const { request, IS_STATIC_PREVIEW } = await import("./client");
     expect(IS_STATIC_PREVIEW).toBe(true);
@@ -595,6 +596,18 @@ describe("静态站点 request", () => {
     expect((await request<WorkspaceData>("/api/tasks")).tasks).toHaveLength(1);
     expect(await request("/api/life")).toEqual(readingAndThoughts);
     expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("without Web Locks refuses preview writes but permits read-only export", async () => {
+    const storage = new FakeStorage();
+    vi.stubEnv("NEXT_PUBLIC_PREVIEW_MODE", "true");
+    vi.stubGlobal("window", { localStorage: storage });
+    vi.stubGlobal("navigator", {});
+    vi.resetModules();
+    const { request } = await import("./client");
+    await expect(request("/api/tasks", jsonOptions(batch()))).rejects.toThrow("请升级");
+    expect((await request<WorkspaceData>("/api/tasks")).tasks).toEqual([]);
+    expect(await request("/api/export")).toBeDefined();
   });
 
   it("正常模式保留原 fetch API 行为和错误信息", async () => {

@@ -56,3 +56,27 @@
   .life-revisit .revisit-filters button{min-width:0;padding:0 9px;font-size:12px}
   .life-revisit .life-revisit-note-filters{flex-direction:column;align-items:stretch;gap:9px;margin-bottom:24px}
 }
+
+/* Comfortable excerpts and distinct filter rows across all revisit cards. */
+.reading-revisit { margin-block: var(--space-section); padding: var(--card-padding); border-radius: var(--radius-card); box-shadow: var(--shadow-card); }
+.revisit-heading h2 { font-size: var(--heading-section); line-height: 1.5; }
+.revisit-heading .section-kicker { font-size: var(--text-xs); letter-spacing: .12em; }
+.revisit-heading h2 + p { font-size: 14px; line-height: 1.85; margin-top: 8px; }
+.revisit-filters button { min-height: 44px; font-size: var(--text-sm); }
+.life-revisit .life-revisit-filter-label { font-size: var(--text-xs); }
+.life-revisit .revisit-filters button { font-size: var(--text-sm); }
+.reading-revisit blockquote { max-width: 68ch; line-height: 1.95; }
+.revisit-quote { font-size: 19px; border-left-width: 2px; padding-left: 22px; }
+.revisit-thought { font-size: var(--text-lg); }
+.revisit-expand, .revisit-excerpt summary { min-height: 44px; }
+.revisit-excerpt summary { line-height: 44px; }
+.revisit-source { gap: 6px 14px; }
+.revisit-source strong { font-size: 14px; }
+.revisit-embedded { margin: 0; padding: 0; border-radius: 0; box-shadow: none; }
+@media (max-width: 640px) {
+  .reading-revisit { margin-block: 26px; padding: 24px 20px; }
+  .revisit-heading { gap: 20px; }
+  .revisit-quote { font-size: 18px; padding-left: 15px; }
+  .revisit-thought { font-size: 16px; }
+  .revisit-embedded { margin: 0; padding: 0; }
+}

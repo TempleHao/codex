@@ -4,7 +4,7 @@ import { backupSchema, legacyBackupSchema, MAX_BACKUP_BYTES } from "./backup";
 import { applyLifePatch, emptyLifeData, lifeDataSchema, lifePatchSchema, mergeLifeBackups, type LifeData } from "./life";
 import type { SourceRecord, Task, WorkspaceData } from "./types";
 import { importBatchSchema, taskPatchSchema, validationErrorMessage } from "./validation";
-import { getWorkspaceLockState, withUnlockedWorkspace } from "./workspace-lock";
+import { getWorkspaceLockState, withUnlockedWorkspace, WORKSPACE_WRITE_UNSUPPORTED } from "./workspace-lock";
 
 export const IS_STATIC_PREVIEW = process.env.NEXT_PUBLIC_PREVIEW_MODE === "true";
 export const APP_VERSION = packageInfo.version;
@@ -261,9 +261,10 @@ function currentBrowserStore(): BrowserStore {
 
 export async function request<T>(url: string, options?: RequestInit): Promise<T> {
   if (IS_STATIC_PREVIEW) {
-    if (getWorkspaceLockState().configured) return withUnlockedWorkspace(storage => new BrowserStore(storage).handleRequest<T>(url, options));
+    if (getWorkspaceLockState().configured) return withUnlockedWorkspace(storage => new BrowserStore(storage).handleRequest<T>(url, options), { readOnly: (options?.method || "GET").toUpperCase() === "GET" });
     const method = (options?.method || "GET").toUpperCase();
-    if (["POST", "PUT", "PATCH", "DELETE"].includes(method) && typeof navigator !== "undefined" && navigator.locks) {
+    if (["POST", "PUT", "PATCH", "DELETE"].includes(method)) {
+      if (typeof navigator === "undefined" || !navigator.locks?.request) throw new Error(WORKSPACE_WRITE_UNSUPPORTED);
       // Every tab uses one exclusive lock for the shared localStorage document.
       return navigator.locks.request(BROWSER_STORAGE_KEY, () => currentBrowserStore().handleRequest<T>(url, options));
     }

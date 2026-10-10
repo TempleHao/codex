@@ -366,3 +366,59 @@
   .reading-intro, .thoughts-intro { padding-bottom: 22px; margin-bottom: 24px; }
   .reading-intro h1, .thoughts-heading h2 { font-size: 30px; }
 }
+
+/* Library controls and reading text share the page's type scale. */
+.reading-intro > div > p:last-child { font-size: var(--text-base); }
+.reading-intro .eyebrow { font-size: var(--text-xs); }
+.reading-year-card h2, .reading-section-heading h2 { font-size: var(--heading-section); }
+.reading-ranking h2, .reading-preferences h2 { font-size: var(--text-lg); line-height: 1.6; }
+.reading-year-card, .reading-detail { padding: var(--card-padding); }
+.reading-stat > span, .reading-ranking strong, .reading-preferences li,
+.reading-data-note, .reading-year-summary > span, .reading-shelf-preferences > span,
+.reading-shelf-footer, .reading-detail-title > p { font-size: var(--text-sm); line-height: 1.85; }
+.reading-book-info > strong { font-size: var(--text-base); line-height: 1.7; min-height: 51px; }
+.reading-book-info > span, .reading-book-meta { font-size: var(--text-xs); line-height: 1.8; }
+.reading-tools { gap: 12px; align-items: stretch; }
+.reading-search { flex-basis: 180px; }
+.reading-search input { font-size: var(--text-sm); min-height: 44px; }
+.reading-select-filters { gap: 8px; align-items: stretch; }
+.reading-select-filters select, .reading-year-card select, .reading-detail-status select { min-height: 44px; font-size: var(--text-sm); }
+.reading-cover-toggle { font-size: var(--text-sm); min-height: 44px; }
+.reading-header-actions .button, .reading-book-actions > .button,
+.reading-highlight-actions > button, .reading-transaction-tools > .button,
+.reading-transaction-tools > summary, .reading-icon-button,
+.reading-success > button, .reading-error > button { min-height: 44px; }
+.reading-icon-button, .reading-success > button, .reading-error > button { min-width: 44px; }
+.reading-highlight blockquote, .reading-own-thought { font-size: var(--text-base); line-height: 1.95; }
+.reading-detail-tabs { gap: 18px; flex-wrap: wrap; }
+.reading-book-facts dd { min-width: 0; overflow-wrap: anywhere; }
+.reading-dialog-header h2 { font-size: var(--heading-section); }
+.reading-dialog .field { font-size: var(--text-sm); }
+.reading-dialog .field :is(input, select, textarea) { font-size: var(--text-base); min-height: 44px; }
+.reading-dialog-footer > span { font-size: var(--text-sm); }
+.reading-dialog-footer > div { flex-wrap: wrap; }
+.reading-dialog-footer .button { min-height: 44px; }
+@media (max-width: 640px) {
+  .reading-tools { flex-wrap: wrap; }
+  .reading-search { flex-basis: 100%; }
+  .reading-select-filters select, .reading-year-card select,
+  .reading-detail-status select, .reading-search input,
+  .reading-dialog .field :is(input, select, textarea) { font-size: 16px; }
+  .reading-books { gap: 12px; padding: 18px; }
+  .reading-book-info > strong { font-size: 14px; min-height: 48px; }
+  .reading-dialog-backdrop { padding: 12px; }
+  .reading-dialog { max-height: calc(100dvh - 24px); }
+  .reading-dialog-header, .reading-dialog-body { padding: 20px; }
+}
+@media (max-width: 380px) {
+  .reading-insights { grid-template-columns: minmax(0, 1fr); }
+  .reading-year-card { grid-column: auto; }
+  .reading-select-filters { flex-wrap: wrap; }
+  .reading-select-filters select { flex-basis: calc(50% - 4px); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .reading-book-card { transition: none; }
+}
+
+.reading-intro h1 { font-size: var(--heading-page); line-height: 1.4; letter-spacing: .025em; }
+@media (max-width: 640px) { .reading-intro h1 { font-size: 32px; } }

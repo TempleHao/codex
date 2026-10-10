@@ -1,5 +1,6 @@
 import { test as base, expect, type Page } from "@playwright/test";
 import { emptyLifeData, lifeDataSchema, type LifeData } from "../lib/life";
+import { WORKSPACE_REVISION_DATABASE, WORKSPACE_REVISION_STORE } from "../lib/workspace-revision";
 import { webcrypto } from "node:crypto";
 import type { WorkspaceData } from "../lib/types";
 
@@ -82,5 +83,27 @@ export async function writePreviewWorkspace(page: Page, value: unknown) {
     iv: Buffer.from(webcrypto.getRandomValues(new Uint8Array(12))).toString("base64"), ciphertext: "" };
   const encrypted = await webcrypto.subtle.encrypt({ name: "AES-GCM", iv: Uint8Array.from(Buffer.from(envelope.iv, "base64")), additionalData: aad(envelope), tagLength: 128 }, await envelopeKey(envelope), new TextEncoder().encode(JSON.stringify(value)));
   envelope.ciphertext = Buffer.from(encrypted).toString("base64");
-  await page.evaluate(({ key, raw }) => localStorage.setItem(key, raw), { key: STORAGE_KEY, raw: JSON.stringify(envelope) });
+  const raw = JSON.stringify(envelope);
+  const fingerprint = Buffer.from(await webcrypto.subtle.digest("SHA-256", new TextEncoder().encode(raw))).toString("hex");
+  // This helper deliberately replaces test data, so update the same committed
+  // marker used by application saves while holding the application's Web Lock.
+  await page.evaluate(async ({ key, raw, fingerprint, database, store }) => {
+    await navigator.locks.request(key, { mode: "exclusive" }, async () => {
+      const db = await new Promise<IDBDatabase>((resolve, reject) => {
+        const request = indexedDB.open(database, 1);
+        request.onupgradeneeded = () => request.result.createObjectStore(store);
+        request.onsuccess = () => resolve(request.result);
+        request.onerror = () => reject(request.error);
+      });
+      try {
+        localStorage.setItem(key, raw);
+        await new Promise<void>((resolve, reject) => {
+          const transaction = db.transaction(store, "readwrite", { durability: "strict" });
+          transaction.objectStore(store).put(fingerprint, key);
+          transaction.oncomplete = () => resolve();
+          transaction.onabort = transaction.onerror = () => reject(transaction.error);
+        });
+      } finally { db.close(); }
+    });
+  }, { key: STORAGE_KEY, raw, fingerprint, database: WORKSPACE_REVISION_DATABASE, store: WORKSPACE_REVISION_STORE });
 }

@@ -216,3 +216,51 @@
   .media-feeling-card h3 { font-size: 23px; }
   .media-detail-header .text-button { font-size: 12px; }
 }
+
+/* Give each work a complete card and keep secondary text legible. */
+.media-header p:last-child { font-size: var(--text-base); }
+.media-header .eyebrow, .media-panel .eyebrow { font-size: var(--text-xs); }
+.media-card { padding: var(--card-padding); }
+.media-card h2, .media-section-header h2, .media-year-review header h2,
+.media-feeling-card h3 { font-size: var(--heading-section); }
+.media-card p, .media-section-header p { font-size: var(--text-sm); line-height: 1.9; }
+.media-view-nav { flex-wrap: wrap; }
+.media-view-nav button, .media-section-header .text-button,
+.media-detail-header .text-button, .media-settings > summary,
+.media-seasons summary, .media-viewing-records summary,
+.trakt-config summary, .trakt-config button { min-height: 44px; }
+.media-actions { gap: 10px; }
+.media-title { padding: 12px; border: 1px solid var(--line); background: var(--paper); border-radius: 16px; height: 100%; }
+.media-title strong { font-size: var(--text-base); line-height: 1.7; }
+.media-title :is(small, em, time), .media-note-mark { font-size: var(--text-xs); }
+.media-title-art { border-radius: 9px; }
+.media-encounter :is(span, small), .media-seasons summary > span,
+.trakt-config code, .media-detail > a { font-size: var(--text-xs); line-height: 1.8; }
+.media-episode h3 { font-size: var(--text-sm); color: var(--ink); }
+.media-feeling-text, .media-thought, .media-episode-thought { font-size: var(--text-base); line-height: 1.95; }
+.media-filters { gap: 12px; align-items: stretch; }
+.media-search { min-width: 180px; }
+.media-editor .field { display: flex; flex-direction: column; gap: 8px; }
+.media-editor .field > span { font-size: var(--text-xs); line-height: 1.85; }
+.media-card select, .media-section-header select, .media-search input,
+.media-editor .field :is(input, select, textarea), .trakt-sync input { font-size: var(--text-sm); }
+.media-dialog { border-radius: var(--radius-card); max-height: calc(100dvh - 32px); overflow-y: auto; overscroll-behavior: contain; }
+.media-detail-top h2 { font-size: var(--heading-section); }
+.media-title:focus-visible { outline: 2px solid var(--green); outline-offset: 3px; }
+.media-title:hover { border-color: #bacdc0; }
+@media (max-width: 640px) {
+  .media-title { padding: 10px; gap: 11px; }
+  .media-titles { gap: 16px 12px; }
+  .media-title strong { font-size: 14px; }
+  .media-view-nav > span { padding: 0 8px; }
+  .media-card select, .media-section-header select, .media-search input,
+  .media-editor .field :is(input, select, textarea), .trakt-sync input { font-size: 16px; }
+  .media-search { flex-basis: 100%; min-width: 0; }
+  .media-form-grid { grid-template-columns: minmax(0, 1fr); gap: 18px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .media-title-art { transition: none; }
+}
+
+.media-header h1 { font-size: var(--heading-page); line-height: 1.4; letter-spacing: .025em; }
+@media (max-width: 640px) { .media-header h1 { font-size: 32px; } }

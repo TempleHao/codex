@@ -17,3 +17,22 @@
 .workspace-lock-button{display:inline-flex;align-items:center;justify-content:center;min-width:44px;min-height:44px;border-radius:8px;color:var(--muted)}
 .workspace-lock-button:hover{background:var(--green-light);color:var(--green)}
 @media(max-width:640px){.workspace-gate{padding:30px 20px}.workspace-gate-card{padding:29px 24px;border-radius:16px}.workspace-gate-brand{margin-bottom:25px}.workspace-gate-card h1{font-size:28px}.workspace-gate-scope{font-size:10px}.date-label{gap:7px}}
+
+/* A quiet entry with the same text scale as the unlocked workspace. */
+.workspace-gate { background: radial-gradient(ellipse at 50% 10%, #e8eee770, transparent 65%), var(--paper); }
+.workspace-gate-card { padding: 38px; border-radius: var(--radius-card); box-shadow: var(--shadow-card); }
+.workspace-gate-kicker { font-size: var(--text-xs); letter-spacing: .08em; }
+.workspace-gate-card h1 { line-height: 1.45; letter-spacing: .025em; }
+.workspace-gate-description { font-size: 14px; line-height: 1.85; }
+.workspace-gate-card form { gap: 22px; margin-top: 28px; }
+.workspace-gate-card label { font-size: var(--text-sm); gap: 8px; }
+.workspace-gate-card input { min-height: 50px; border-radius: 10px; }
+.workspace-gate-submit { min-height: 50px; border-radius: 10px; font-weight: 500; }
+.workspace-gate-note, .workspace-gate-error, .workspace-gate-reset, .workspace-gate-scope { font-size: var(--text-xs); line-height: 1.85; }
+.workspace-gate-scope { max-width: 40ch; }
+@media (max-width: 640px) {
+  .workspace-gate { padding: 32px 20px; }
+  .workspace-gate-card { padding: 28px 24px; }
+  .workspace-gate-card h1 { font-size: 28px; }
+  .workspace-gate-brand small { font-size: 11px; }
+}

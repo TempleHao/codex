@@ -2,6 +2,13 @@ import { webcrypto } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type * as WorkspaceLock from "./workspace-lock";
 
+const revision = vi.hoisted(() => ({ value: null as string | null, read: vi.fn(), write: vi.fn() }));
+vi.mock("./workspace-revision", async importOriginal => ({
+  ...await importOriginal<typeof import("./workspace-revision")>(),
+  readWorkspaceRevision: revision.read,
+  writeWorkspaceRevision: revision.write,
+}));
+
 class FakeStorage implements Storage {
   private entries = new Map<string, string>();
   writes = 0;
@@ -34,11 +41,14 @@ let key: string;
 
 beforeEach(async () => {
   vi.resetModules();
+  revision.value = null;
+  revision.read.mockReset().mockImplementation(async () => revision.value);
+  revision.write.mockReset().mockImplementation(async (fingerprint: string) => { revision.value = fingerprint; });
   storage = new FakeStorage();
   fakeWindow = Object.assign(new EventTarget(), { localStorage: storage, location: { origin: "https://example.test" } });
   vi.stubGlobal("window", fakeWindow);
   vi.stubGlobal("crypto", webcrypto);
-  vi.stubGlobal("navigator", {});
+  vi.stubGlobal("navigator", { locks: { request: async (_name: string, _options: unknown, operation: () => Promise<unknown>) => operation() } });
   lock = await import("./workspace-lock");
   key = lock.WORKSPACE_STORAGE_KEY;
 });
@@ -52,7 +62,7 @@ function emitStorage(area: Storage = storage, url = "https://example.test/anothe
 }
 
 async function readPlaintext(): Promise<string | null> {
-  return lock.withUnlockedWorkspace(scratch => scratch.getItem(key));
+  return lock.withUnlockedWorkspace(scratch => scratch.getItem(key), { readOnly: true });
 }
 
 async function encryptedFixture(): Promise<string> {
@@ -231,13 +241,25 @@ describe("本机工作区加密", () => {
     expect(lock.getWorkspaceLockState().unlocked).toBe(true);
   });
 
-  it("detects a concurrent write before committing when Web Locks are unavailable", async () => {
+  it("rejects an external replacement before committing our mutation", async () => {
     const original = await encryptedFixture();
     const externallyChanged = JSON.stringify({ ...JSON.parse(original), iv: btoa(String.fromCharCode(...new Uint8Array(12))) });
     await expect(lock.withUnlockedWorkspace(scratch => {
       scratch.setItem(key, "{}"); storage.setItem(key, externallyChanged);
     })).rejects.toThrow("已改变");
     expect(storage.getItem(key)).toBe(externallyChanged);
+  });
+
+  it("refuses writes without Web Locks while preserving unlock and backup access", async () => {
+    const original = await encryptedFixture();
+    vi.stubGlobal("navigator", {});
+    const operation = vi.fn((scratch: Storage) => scratch.setItem(key, "{}"));
+    await expect(lock.withUnlockedWorkspace(operation)).rejects.toThrow("请升级");
+    expect(operation).not.toHaveBeenCalled();
+    expect(storage.getItem(key)).toBe(original);
+    lock.lockWorkspace();
+    await lock.unlockWorkspace(PASSWORD);
+    expect(await readPlaintext()).toBe(LEGACY);
   });
 
   it("external reset or salt change locks the session; unrelated origins/storage do not", async () => {
@@ -258,6 +280,87 @@ describe("本机工作区加密", () => {
     storage.removeItem(key); emitStorage();
     expect(lock.getWorkspaceLockState().configured).toBe(false);
     unsubscribe();
+  });
+
+  it("waits for a stale renderer to observe the committed ciphertext before mutating", async () => {
+    const oldRaw = await encryptedFixture();
+    await lock.withUnlockedWorkspace(scratch => {
+      const data = JSON.parse(scratch.getItem(key)!);
+      data.counter = 1;
+      scratch.setItem(key, JSON.stringify(data));
+    });
+    const latestRaw = storage.getItem(key)!;
+    storage.setItem(key, oldRaw); // Simulate a renderer cache lagging behind the marker.
+    const operation = vi.fn((scratch: Storage) => {
+      const data = JSON.parse(scratch.getItem(key)!);
+      data.counter += 1;
+      scratch.setItem(key, JSON.stringify(data));
+    });
+    const pending = lock.withUnlockedWorkspace(operation);
+    await new Promise(resolve => setTimeout(resolve, 60));
+    expect(operation).not.toHaveBeenCalled();
+    storage.setItem(key, latestRaw);
+    await pending;
+    expect(JSON.parse((await readPlaintext())!).counter).toBe(2);
+  });
+
+  it("refuses mismatched versions while allowing read-only backup access", async () => {
+    const original = await encryptedFixture();
+    revision.value = "0".repeat(64);
+    const operation = vi.fn((scratch: Storage) => scratch.setItem(key, "{}"));
+    await expect(lock.withUnlockedWorkspace(operation)).rejects.toThrow("保存版本尚未同步");
+    expect(operation).not.toHaveBeenCalled();
+    expect(storage.getItem(key)).toBe(original);
+    expect(await readPlaintext()).toBe(LEGACY);
+  });
+
+  it("rolls back ciphertext when committing the revision fails", async () => {
+    const original = await encryptedFixture();
+    const fingerprint = revision.value;
+    revision.write.mockRejectedValueOnce(new Error("synthetic revision failure"));
+    await expect(lock.withUnlockedWorkspace(scratch => scratch.setItem(key, "{}"))).rejects.toThrow("synthetic revision failure");
+    expect(storage.getItem(key)).toBe(original);
+    expect(revision.value).toBe(fingerprint);
+    expect(await readPlaintext()).toBe(LEGACY);
+  });
+
+  it("refuses writes when the revision store is unavailable but still allows read-only access", async () => {
+    const original = await encryptedFixture();
+    revision.read.mockRejectedValueOnce(new Error("synthetic revision unavailable"));
+    const operation = vi.fn((scratch: Storage) => scratch.setItem(key, "{}"));
+    await expect(lock.withUnlockedWorkspace(operation)).rejects.toThrow("synthetic revision unavailable");
+    expect(operation).not.toHaveBeenCalled();
+    expect(storage.getItem(key)).toBe(original);
+    expect(await readPlaintext()).toBe(LEGACY);
+  });
+
+  it("restores a legacy record if setup cannot commit its revision", async () => {
+    storage.setItem(key, LEGACY);
+    revision.write.mockRejectedValueOnce(new Error("synthetic revision failure"));
+    await expect(lock.setupWorkspaceLock(PASSWORD)).rejects.toThrow("synthetic revision failure");
+    expect(storage.getItem(key)).toBe(LEGACY);
+    expect(revision.value).toBeNull();
+    expect(lock.getWorkspaceLockState().unlocked).toBe(false);
+  });
+
+  it("initializes an older encrypted workspace without a revision and forbids writes from read-only operations", async () => {
+    await encryptedFixture();
+    revision.value = null;
+    await lock.withUnlockedWorkspace(scratch => scratch.getItem(key));
+    expect(revision.value).toMatch(/^[0-9a-f]{64}$/);
+    const original = storage.getItem(key);
+    await expect(lock.withUnlockedWorkspace(scratch => scratch.setItem(key, "{}"), { readOnly: true })).rejects.toThrow("只读操作");
+    expect(storage.getItem(key)).toBe(original);
+  });
+
+  it("replaces the revision when a reset is followed by a new setup", async () => {
+    await encryptedFixture();
+    const oldRevision = revision.value;
+    lock.resetWorkspaceLock();
+    await lock.setupWorkspaceLock(PASSWORD);
+    expect(revision.value).not.toBe(oldRevision);
+    await lock.withUnlockedWorkspace(scratch => scratch.setItem(key, "{}"));
+    expect(await readPlaintext()).toBe("{}");
   });
 
   it("uses the storage key as an exclusive Web Lock name", async () => {

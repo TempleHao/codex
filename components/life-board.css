@@ -1278,3 +1278,48 @@
   .life-board-entry-card { padding: 19px; }
   .life-board-dialog-header h2 { font-size: 25px; }
 }
+
+/* The board uses the same reading rhythm as the other life spaces. */
+.life-board-intro { gap: 24px; margin-bottom: var(--space-section); padding-bottom: 28px; }
+.life-board-intro > div:first-child > p:first-child { font-size: var(--text-xs); letter-spacing: .14em; }
+.life-board-intro h1 { font-size: var(--heading-page); line-height: 1.4; letter-spacing: .025em; }
+.life-board-intro > div > p:last-child { font-size: var(--text-base); line-height: 1.85; margin-top: 12px; }
+.life-board h2 { font-size: var(--heading-section); line-height: 1.5; }
+.life-board-layout { gap: 24px; }
+.life-board-section-heading { padding: var(--card-padding); gap: 16px; }
+.life-board-section-heading > div > p { font-size: var(--text-xs); line-height: 1.8; margin-bottom: 7px; }
+.life-board-domains button { min-height: 44px; padding: 9px 14px; font-size: var(--text-xs); }
+.life-board-filters, .life-timeline-tools { gap: 14px; }
+.life-board-filters label, .life-timeline-tools label { font-size: var(--text-xs); line-height: 1.8; }
+.life-board-filters :is(input, select), .life-timeline-tools :is(input, select) { min-height: 44px; font-size: 14px; }
+.life-thread-grid { gap: 16px; }
+.life-thread-card { border-radius: 14px; padding: 24px; }
+.life-thread-description { font-size: var(--text-base); line-height: 1.9; }
+.life-thread-meta, .life-thread-card-heading > div > p { font-size: var(--text-xs); line-height: 1.8; }
+.life-thread-actions, .life-timeline-actions { gap: 8px 16px; }
+.life-thread-actions button, .life-timeline-actions button { min-height: 44px; font-size: var(--text-sm); }
+.life-board-aside-card { padding: var(--card-padding); }
+.life-board-aside-card :is(p, li) { font-size: 14px; line-height: 1.9; }
+.life-board-entry-card { padding: 22px; border-radius: 16px; }
+.life-board-entry-card :is(p, small) { font-size: var(--text-sm); }
+.life-timeline-content :is(p, blockquote, pre) { font-size: var(--text-base); line-height: 1.9; overflow-wrap: anywhere; }
+.life-board-empty p { font-size: 14px; max-width: 44ch; margin-inline: auto; }
+.life-board-dialog-header { padding: var(--card-padding); }
+.life-board-dialog-header h2 { font-size: var(--heading-section); line-height: 1.5; }
+.life-board-field { font-size: var(--text-sm); gap: 8px; line-height: 1.8; }
+.life-board-field :is(input, select, textarea) { min-height: 46px; padding: 11px 13px; }
+.life-board-form-hint, .life-board-dialog-footer > span { font-size: var(--text-xs); line-height: 1.9; }
+@media (max-width: 640px) {
+  .life-board-intro { gap: 22px; padding-bottom: 24px; margin-bottom: 26px; }
+  .life-board-intro h1 { font-size: 32px; }
+  .life-board-intro > div > p:last-child { font-size: 14px; }
+  .life-board-section-heading { padding: 22px 18px; align-items: flex-start; }
+  .life-board h2 { font-size: 23px; }
+  .life-board-domains { padding-inline: 18px; }
+  .life-thread-card { padding: 20px; }
+  .life-board-filters :is(input, select), .life-timeline-tools :is(input, select), .life-board-field :is(input, select, textarea) { font-size: 16px; }
+  .life-board-dialog-header { padding: 24px 20px; }
+  .life-board-dialog-footer { flex-wrap: wrap; gap: 12px; }
+  .life-board-dialog-footer > span { max-width: none; flex: 1 1 100%; }
+  .life-board-dialog-footer > div { margin-left: auto; }
+}

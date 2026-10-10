@@ -50,3 +50,35 @@ test("手机底栏只提醒未完成事务，胶囊与图标、文字和相邻�
     await expect(tasks.locator(".nav-total")).toHaveText(String(count));
   }
 });
+
+test("手机各页面顶栏保持单行，入口和锁定按钮不会挤出屏幕", async ({ page }) => {
+  await page.route("**/blog-sync.json*", route => route.fulfill({ json: { version: 1, sourceUrl: "https://www.ashsilent.com/", updatedAt: "2026-10-10T00:00:00Z", entries: [] } }));
+  await page.goto("./");
+  await expect(page.getByRole("button", { name: "导出备份", exact: true })).toBeEnabled();
+  const navigation = page.getByRole("navigation", { name: "主导航" });
+  for (const width of [320, 390, 430]) {
+    await page.setViewportSize({ width, height: 844 });
+    for (const name of ["人生看板", "阅读", "影音", "思考", "财务", "事务"]) {
+      await navigation.getByRole("button", { name, exact: true }).click();
+      const layout = await page.locator(".topbar").evaluate(header => {
+        const rect = (element: Element) => { const r = element.getBoundingClientRect(); return { left: r.left, right: r.right, top: r.top, bottom: r.bottom, height: r.height, width: r.width }; };
+        const crumb = header.querySelector(".breadcrumb")!;
+        const date = header.querySelector(".date-label")!;
+        const textLines = (element: Element) => [...element.childNodes].flatMap(node => {
+          if (node.nodeType !== Node.TEXT_NODE || !node.textContent?.trim()) return [];
+          const range = document.createRange(); range.selectNodeContents(node);
+          return [...range.getClientRects()].filter(r => r.height > 0 && r.width > 0);
+        }).length;
+        return { crumb: rect(crumb), date: rect(date), titleLines: textLines(crumb.querySelector("strong")!), dateLines: textLines(date), lock: rect(header.querySelector(".workspace-lock-button")!), overflow: document.documentElement.scrollWidth > innerWidth };
+      });
+      expect(layout.overflow).toBe(false);
+      expect(layout.crumb.height).toBeLessThanOrEqual(40);
+      expect(layout.titleLines).toBe(1);
+      expect(layout.dateLines).toBe(1);
+      expect(layout.crumb.right).toBeLessThanOrEqual(layout.date.left);
+      expect(layout.lock.right).toBeLessThanOrEqual(width);
+      expect(layout.lock.width).toBeGreaterThanOrEqual(44);
+      expect(layout.lock.height).toBeGreaterThanOrEqual(44);
+    }
+  }
+});
