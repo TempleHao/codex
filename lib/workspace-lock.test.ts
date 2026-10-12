@@ -1,12 +1,18 @@
 import { webcrypto } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type * as WorkspaceLock from "./workspace-lock";
+import type { DeviceTrust } from "./workspace-device";
 
 const revision = vi.hoisted(() => ({ value: null as string | null, read: vi.fn(), write: vi.fn() }));
 vi.mock("./workspace-revision", async importOriginal => ({
   ...await importOriginal<typeof import("./workspace-revision")>(),
   readWorkspaceRevision: revision.read,
   writeWorkspaceRevision: revision.write,
+}));
+const devices = vi.hoisted(() => ({ revision: null as string | null, device: null as DeviceTrust | null, read: vi.fn(), remember: vi.fn(), revoke: vi.fn(), block: vi.fn() }));
+vi.mock("./workspace-device", async importOriginal => ({
+  ...await importOriginal<typeof import("./workspace-device")>(),
+  readDeviceTrust: devices.read, rememberDevice: devices.remember, revokeDeviceTrust: devices.revoke, blockDeviceTrust: devices.block,
 }));
 
 class FakeStorage implements Storage {
@@ -24,7 +30,8 @@ class FakeStorage implements Storage {
   }
   setItem(key: string, value: string) {
     if (this.failWrite) throw new DOMException("full", "QuotaExceededError");
-    this.entries.set(key, value); this.writes += 1;
+    this.entries.set(key, value);
+    if (key === "life-workbench-preview-v1") this.writes += 1;
   }
   removeItem(key: string) {
     if (this.failRemove) throw new DOMException("blocked", "SecurityError");
@@ -45,6 +52,18 @@ beforeEach(async () => {
   revision.read.mockReset().mockImplementation(async () => revision.value);
   revision.write.mockReset().mockImplementation(async (fingerprint: string) => { revision.value = fingerprint; });
   storage = new FakeStorage();
+  devices.revision = null; devices.device = null;
+  devices.read.mockReset().mockImplementation(async () => ({ revision: devices.revision, device: devices.device }));
+  devices.block.mockReset().mockImplementation(() => storage.setItem("life-workbench-device-trust-policy-v1", "L:synthetic-revocation"));
+  devices.revoke.mockReset().mockImplementation(async () => { devices.block(); devices.device = null; devices.revision = "revoked"; });
+  devices.remember.mockReset().mockImplementation(async (key: CryptoKey, salt: string, revision: string | null, authorized: () => boolean) => {
+    if (!authorized() || revision !== devices.revision) throw new Error("changed");
+    const createdAt = Date.now();
+    devices.device = { id: "T:synthetic-device", key, salt, createdAt, expiresAt: createdAt + 30 * 86400_000 };
+    devices.revision = devices.device.id;
+    storage.setItem("life-workbench-device-trust-policy-v1", devices.device.id);
+    return devices.device;
+  });
   fakeWindow = Object.assign(new EventTarget(), { localStorage: storage, location: { origin: "https://example.test" } });
   vi.stubGlobal("window", fakeWindow);
   vi.stubGlobal("crypto", webcrypto);
@@ -53,7 +72,7 @@ beforeEach(async () => {
   key = lock.WORKSPACE_STORAGE_KEY;
 });
 
-afterEach(() => { lock?.lockWorkspace(); vi.unstubAllGlobals(); vi.restoreAllMocks(); });
+afterEach(async () => { await lock?.lockWorkspace(); vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 
 function emitStorage(area: Storage = storage, url = "https://example.test/another-tab"): void {
   const event = new Event("storage");
@@ -80,7 +99,8 @@ describe("本机工作区加密", () => {
   it("migrates the exact legacy document, preserving unknown fields and hiding synthetic secrets", async () => {
     const raw = await encryptedFixture();
     expect(key).toBe("life-workbench-preview-v1");
-    expect(storage.length).toBe(1);
+    expect(storage.length).toBe(2);
+    expect(storage.getItem("life-workbench-device-trust-policy-v1")).toMatch(/^L:/);
     expect(raw).not.toContain("synthetic-private-marker-982");
     expect(raw).not.toContain("balance");
     const envelope = JSON.parse(raw);
@@ -380,5 +400,74 @@ describe("本机工作区加密", () => {
     expect(storage.getItem(key)).toBe("[1,2]");
     storage.failRead = true;
     expect(lock.getWorkspaceLockState()).toMatchObject({ configured: true, unlocked: false, error: expect.stringContaining("禁止读取") });
+  });
+});
+
+describe("remembered workspace devices", () => {
+  it("restores the actual encrypted document after suspension without rewriting or extending permission", async () => {
+    storage.setItem(key, LEGACY);
+    await lock.setupWorkspaceLock(PASSWORD, { rememberDevice: true });
+    const ciphertext = storage.getItem(key);
+    const expiry = devices.device!.expiresAt;
+    expect(devices.device!.key.extractable).toBe(false);
+    lock.suspendWorkspace();
+    expect(lock.getWorkspaceLockState().unlocked).toBe(false);
+    expect(await lock.restoreTrustedWorkspace()).toBe(true);
+    expect(await readPlaintext()).toBe(LEGACY);
+    expect(storage.getItem(key)).toBe(ciphertext);
+    expect(lock.getWorkspaceLockState().rememberedUntil).toBe(expiry);
+    expect(devices.device!.expiresAt).toBe(expiry);
+  });
+
+  it("an unremembered session and an expired permission both require the password", async () => {
+    await lock.setupWorkspaceLock(PASSWORD);
+    lock.suspendWorkspace();
+    expect(await lock.restoreTrustedWorkspace()).toBe(false);
+    await lock.unlockWorkspace(PASSWORD, { rememberDevice: true });
+    const ciphertext = storage.getItem(key);
+    const now = vi.spyOn(Date, "now").mockReturnValue(devices.device!.expiresAt);
+    expect(lock.getWorkspaceLockState().unlocked).toBe(false);
+    expect(await lock.restoreTrustedWorkspace()).toBe(false);
+    expect(storage.getItem(key)).toBe(ciphertext);
+    now.mockRestore();
+  });
+
+  it("active locking revokes the permission, and an in-flight restore cannot reopen the page", async () => {
+    await lock.setupWorkspaceLock(PASSWORD, { rememberDevice: true });
+    const device = devices.device!;
+    lock.suspendWorkspace();
+    let release!: () => void;
+    devices.read.mockImplementationOnce(() => new Promise(resolve => { release = () => resolve({ revision: device.id, device }); }));
+    const restoring = lock.restoreTrustedWorkspace();
+    await vi.waitFor(() => expect(release).toBeTypeOf("function"));
+    await lock.lockWorkspace(); release();
+    expect(await restoring).toBe(false);
+    expect(lock.getWorkspaceLockState().unlocked).toBe(false);
+    expect(devices.device).toBeNull();
+  });
+
+  it("failed key persistence permits this authenticated session but reports that it is not remembered", async () => {
+    devices.remember.mockRejectedValueOnce(new Error("storage unavailable"));
+    await lock.setupWorkspaceLock(PASSWORD, { rememberDevice: true });
+    expect(lock.getWorkspaceLockState().unlocked).toBe(true);
+    expect(lock.getWorkspaceLockState().notice).toContain("下次打开仍需口令");
+    expect(lock.getWorkspaceLockState().rememberedUntil).toBeUndefined();
+    lock.suspendWorkspace();
+    expect(await lock.restoreTrustedWorkspace()).toBe(false);
+  });
+
+  it("salt mismatch, a wrong key and a failed store read never unlock or alter ciphertext", async () => {
+    await lock.setupWorkspaceLock(PASSWORD, { rememberDevice: true });
+    const device = devices.device!;
+    const ciphertext = storage.getItem(key);
+    lock.suspendWorkspace();
+    devices.device = { ...device, salt: Buffer.alloc(16, 9).toString("base64") };
+    expect(await lock.restoreTrustedWorkspace()).toBe(false);
+    devices.device = { ...device, key: await webcrypto.subtle.generateKey({ name: "AES-GCM", length: 256 }, false, ["encrypt", "decrypt"]) as CryptoKey };
+    expect(await lock.restoreTrustedWorkspace()).toBe(false);
+    devices.read.mockRejectedValueOnce(new Error("blocked"));
+    expect(await lock.restoreTrustedWorkspace()).toBe(false);
+    expect(lock.getWorkspaceLockState().unlocked).toBe(false);
+    expect(storage.getItem(key)).toBe(ciphertext);
   });
 });

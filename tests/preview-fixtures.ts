@@ -24,7 +24,7 @@ export function watchPreviewUnlock(page: Page) {
 }
 export async function unlockPreviewWorkspace(page: Page) {
   const gate = page.locator(".workspace-gate");
-  await expect(page.locator(".workspace-gate, .workspace").first()).toBeVisible({ timeout: 15000 });
+  await expect(page.locator("#workspace-password, .workspace").first()).toBeVisible({ timeout: 15000 });
   if (!await gate.isVisible()) return;
   await gate.getByLabel("本机口令", { exact: true }).fill(PREVIEW_TEST_PASSWORD);
   const confirmation = gate.getByLabel("再次输入口令", { exact: true });

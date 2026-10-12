@@ -1,6 +1,7 @@
 import { readWorkspaceRevision, workspaceFingerprint, writeWorkspaceRevision } from "./workspace-revision";
+import { blockDeviceTrust, DEVICE_TRUST_POLICY_KEY, deviceTrustAllowed, readDeviceTrust, rememberDevice, revokeDeviceTrust } from "./workspace-device";
 
-/** Local workspace encryption. Only ciphertext is persistent; the session key is memory-only. */
+/** Workspace contents stay encrypted; remembering a device is a separate, expiring permission. */
 export const WORKSPACE_STORAGE_KEY = "life-workbench-preview-v1";
 export const WORKSPACE_WRITE_UNSUPPORTED = "此浏览器不支持跨页面安全保存，未保存本次内容。请升级到较新的浏览器；仍可解锁并导出备份。";
 const FORMAT = "life-workbench-encrypted";
@@ -16,13 +17,16 @@ const CHANGED = "本机记录或锁定状态已改变，请重新解锁后重试
 
 type Envelope = { format: typeof FORMAT; version: 1; iterations: number; salt: string; iv: string; ciphertext: string };
 type RecordState = { kind: "empty" | "legacy"; raw: string | null } | { kind: "encrypted"; raw: string; envelope: Envelope };
-type Session = { key: CryptoKey; salt: string };
+type Session = { key: CryptoKey; salt: string; trustId?: string; trustedUntil?: number };
+type UnlockOptions = { rememberDevice?: boolean };
 let session: Session | null = null;
 let epoch = 0;
 let lastError: string | undefined;
+let lastNotice: string | undefined;
 let queue: Promise<unknown> = Promise.resolve();
 const listeners = new Set<() => void>();
 let eventTarget: Window | undefined;
+let lockChannel: BroadcastChannel | undefined;
 
 function notify(): void {
   for (const listener of listeners) {
@@ -193,7 +197,19 @@ async function decrypt(envelope: Envelope, key: CryptoKey): Promise<string> {
 function ensureEvents(): void {
   if (typeof window === "undefined" || typeof window.addEventListener !== "function" || eventTarget === window) return;
   eventTarget = window;
+  if (typeof window.BroadcastChannel === "function") {
+    lockChannel = new window.BroadcastChannel("life-workbench-device-lock");
+    lockChannel.onmessage = event => {
+      if (event.data?.type === "lock") { forgetSession(); lastNotice = undefined; notify(); }
+    };
+  }
   window.addEventListener("storage", (event: StorageEvent) => {
+    if (event.key === DEVICE_TRUST_POLICY_KEY) {
+      if (event.storageArea === browserStorage() && (!event.newValue || event.newValue.startsWith("L:"))) {
+        forgetSession(); lastNotice = undefined; notify();
+      }
+      return;
+    }
     if (event.key !== null && event.key !== WORKSPACE_STORAGE_KEY) return;
     try {
       if (event.storageArea !== browserStorage()) return;
@@ -206,13 +222,16 @@ function ensureEvents(): void {
   });
 }
 
-export function getWorkspaceLockState(): { configured: boolean; unlocked: boolean; error?: string } {
+export function getWorkspaceLockState(): { configured: boolean; unlocked: boolean; rememberedUntil?: number; error?: string; notice?: string } {
   if (typeof window === "undefined") return { configured: false, unlocked: false };
   ensureEvents();
   try {
     const record = inspect(readRaw(browserStorage()));
     if (session && (record.kind !== "encrypted" || record.envelope.salt !== session.salt)) forgetSession();
-    return { configured: record.kind === "encrypted", unlocked: session !== null, ...(lastError ? { error: lastError } : {}) };
+    if (session?.trustedUntil && (Date.now() >= session.trustedUntil || browserStorage().getItem(DEVICE_TRUST_POLICY_KEY) !== session.trustId)) forgetSession();
+    return { configured: record.kind === "encrypted", unlocked: session !== null,
+      ...(session?.trustedUntil ? { rememberedUntil: session.trustedUntil } : {}),
+      ...(lastError ? { error: lastError } : {}), ...(lastNotice ? { notice: lastNotice } : {}) };
   } catch (error) {
     forgetSession();
     return { configured: true, unlocked: false, error: error instanceof Error ? error.message : CORRUPT };
@@ -244,11 +263,35 @@ function assertUnchanged(storage: Storage, before: string | null, expected: numb
   if (readRaw(storage) !== before) throw new Error(CHANGED);
 }
 
-export function setupWorkspaceLock(password: string): Promise<void> {
+async function trustRevision(options: UnlockOptions): Promise<string | null> {
+  if (!options.rememberDevice) return null;
+  try { return (await readDeviceTrust()).revision; } catch { return null; }
+}
+
+async function finishUnlock(active: Session, options: UnlockOptions, revision: string | null, expected: number): Promise<void> {
+  lastNotice = undefined;
+  try {
+    if (options.rememberDevice) {
+      const device = await rememberDevice(active.key, active.salt, revision, () => epoch === expected && session === active);
+      active.trustId = device.id; active.trustedUntil = device.expiresAt;
+    } else {
+      blockDeviceTrust(); await revokeDeviceTrust();
+    }
+  } catch {
+    lastNotice = options.rememberDevice
+      ? "这次已解锁，但此浏览器暂时没能记住设备；下次打开仍需口令。"
+      : "这次已解锁，但未能确认设备记忆已取消。请检查本机存储，或使用锁定按钮重试。";
+  }
+  assertEpoch(expected);
+  lastError = undefined; notify();
+}
+
+export function setupWorkspaceLock(password: string, options: UnlockOptions = {}): Promise<void> {
   const expected = epoch;
   return serialized(() => exclusive(async () => {
     assertEpoch(expected);
     checkPassword(password);
+    const revision = await trustRevision(options);
     const storage = browserStorage();
     const record = inspect(readRaw(storage));
     if (record.kind === "encrypted") throw new Error("本机记录已设置口令，请使用口令解锁。");
@@ -259,16 +302,16 @@ export function setupWorkspaceLock(password: string): Promise<void> {
     assertUnchanged(storage, record.raw, expected);
     await commitRaw(storage, record.raw, encrypted, expected);
     session = { key, salt: encodedSalt };
-    lastError = undefined;
-    notify();
+    await finishUnlock(session, options, revision, expected);
   }));
 }
 
-export function unlockWorkspace(password: string): Promise<void> {
+export function unlockWorkspace(password: string, options: UnlockOptions = {}): Promise<void> {
   const expected = epoch;
   return serialized(() => exclusive(async () => {
     assertEpoch(expected);
     checkPassword(password);
+    const revision = await trustRevision(options);
     const storage = browserStorage();
     const record = inspect(readRaw(storage));
     if (record.kind !== "encrypted") throw new Error("请先为本机记录设置口令。");
@@ -278,12 +321,50 @@ export function unlockWorkspace(password: string): Promise<void> {
     await decrypt(record.envelope, key);
     assertUnchanged(storage, record.raw, expected);
     session = { key, salt: record.envelope.salt };
-    lastError = undefined;
-    notify();
+    await finishUnlock(session, options, revision, expected);
   }, { readOnly: true })).catch(error => { notify(); throw error; });
 }
 
-export function lockWorkspace(): void { forgetSession(); lastError = undefined; notify(); }
+/** Navigation drops the in-memory key but leaves the user's device permission intact. */
+export function suspendWorkspace(): void { forgetSession(); lastError = undefined; lastNotice = undefined; notify(); }
+
+export function dismissWorkspaceNotice(): void { lastNotice = undefined; notify(); }
+
+export function lockWorkspace(): Promise<void> {
+  forgetSession(); lastError = undefined; lastNotice = undefined;
+  try { blockDeviceTrust(); } catch { /* The IndexedDB revocation below may still succeed. */ }
+  try { lockChannel?.postMessage({ type: "lock" }); } catch { /* Storage events also notify other pages. */ }
+  notify();
+  const expected = epoch;
+  return revokeDeviceTrust().catch(() => {
+    if (epoch === expected) {
+      lastError = "当前页面已锁定，但未能确认设备记忆已取消。请允许本机存储后重试。";
+      notify();
+    }
+  });
+}
+
+/** Automatically restore only an unexpired, unretracted key that decrypts the current document. */
+export function restoreTrustedWorkspace(): Promise<boolean> {
+  const expected = epoch;
+  return serialized(() => exclusive(async () => {
+    assertEpoch(expected);
+    if (getWorkspaceLockState().unlocked) return true;
+    const { device } = await readDeviceTrust();
+    if (!device || !deviceTrustAllowed(device)) return false;
+    const storage = browserStorage();
+    const record = inspect(readRaw(storage));
+    if (record.kind !== "encrypted" || record.envelope.salt !== device.salt) return false;
+    await decrypt(record.envelope, device.key);
+    assertUnchanged(storage, record.raw, expected);
+    const latest = (await readDeviceTrust()).device;
+    if (!latest || latest.id !== device.id || !deviceTrustAllowed(latest)) return false;
+    assertUnchanged(storage, record.raw, expected);
+    session = { key: device.key, salt: device.salt, trustId: device.id, trustedUntil: device.expiresAt };
+    lastError = undefined; lastNotice = undefined; notify();
+    return true;
+  }, { readOnly: true })).catch(() => false);
+}
 
 /** Caller must obtain explicit destructive-reset confirmation in the UI first. */
 export function resetWorkspaceLock(): void {
@@ -291,6 +372,7 @@ export function resetWorkspaceLock(): void {
   try { storage.removeItem(WORKSPACE_STORAGE_KEY); }
   catch { throw new Error("浏览器禁止删除本机记录，原数据仍保留。"); }
   forgetSession(); lastError = undefined; notify();
+  void lockWorkspace();
 }
 
 class ScratchStorage implements Storage {
@@ -309,6 +391,7 @@ export function withUnlockedWorkspace<T>(operation: (storage: Storage) => T | Pr
   const active = session;
   return serialized(() => exclusive(async () => {
     assertEpoch(expected);
+    getWorkspaceLockState();
     if (!active || session !== active) throw new Error(LOCKED);
     const storage = browserStorage();
     const raw = options.readOnly ? readRaw(storage) : await committedRaw(storage, expected);

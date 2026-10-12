@@ -36,3 +36,11 @@
   .workspace-gate-card h1 { font-size: 28px; }
   .workspace-gate-brand small { font-size: 11px; }
 }
+
+.workspace-gate-card .workspace-remember { display: flex; align-items: flex-start; gap: 12px; padding: 14px; border: 1px solid var(--line); border-radius: 12px; background: var(--paper); color: var(--ink); font-size: 14px; cursor: pointer; }
+.workspace-gate-card .workspace-remember input { width: 19px; min-height: 19px; height: 19px; margin: 3px 0 0; padding: 0; flex-shrink: 0; accent-color: var(--green); }
+.workspace-remember span { line-height: 1.8; }
+.workspace-remember small { display: block; margin-top: 4px; font-size: var(--text-xs); color: var(--muted); line-height: 1.8; }
+.workspace-trust-notice { position: fixed; top: 88px; right: 24px; z-index: 60; display: flex; align-items: flex-start; gap: 12px; max-width: 420px; padding: 16px 18px; background: var(--peach-light); color: var(--ink); border: 1px solid var(--line); border-radius: 12px; box-shadow: var(--shadow-card); font-size: var(--text-sm); line-height: 1.85; }
+.workspace-trust-notice button { flex-shrink: 0; min-width: 44px; min-height: 44px; margin: -8px -8px -8px 0; font-size: 22px; }
+@media (max-width: 640px) { .workspace-trust-notice { top: 76px; inset-inline: 16px; max-width: none; } }

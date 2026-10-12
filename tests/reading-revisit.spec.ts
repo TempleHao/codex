@@ -54,7 +54,7 @@ test("首页随机回顾在阅读页保持一致，换一条不重复并能定�
   await view(page, "人生看板");
   await expect(card(page).getByRole("button", { name: "划线", exact: true })).toHaveAttribute("aria-pressed", "true");
   expect(await saved(page)).toBe(original);
-  expect(await page.evaluate(() => localStorage.length)).toBe(1);
+  expect(await page.evaluate(() => Object.keys(localStorage).sort())).toEqual(["life-workbench-device-trust-policy-v1", "life-workbench-preview-v1"]);
 });
 
 test("只有想法和长内容可阅读，过滤为空可切回，手机与电脑无溢出或记录改写", async ({ page }) => {
